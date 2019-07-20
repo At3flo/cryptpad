@@ -113,7 +113,7 @@ define([
         if (username === null) {
             rightLinks = [
                 h('a.nav-item.nav-link.cp-login-btn', { href: '/login/'}, Msg.login_login),
-                h('a.nav-item.nav-link.cp-register-btn', { href: '/register/'}, Msg.login_register)
+                // h('a.nav-item.nav-link.cp-register-btn', { href: '/register/'}, Msg.login_register)
             ];
         } else {
             rightLinks = h('a.nav-item.nav-link.cp-user-btn', { href: '/drive/' }, [
