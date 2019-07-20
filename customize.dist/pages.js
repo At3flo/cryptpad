@@ -145,9 +145,9 @@ define([
             h('div.collapse.navbar-collapse.justify-content-end#menuCollapse', [
                 //h('a.nav-item.nav-link', { href: '/what-is-cryptpad.html'}, Msg.topbar_whatIsCryptpad), // Moved the FAQ
                 //h('a.nav-item.nav-link', { href: '/faq.html'}, Msg.faq_link),
-                h('a.nav-item.nav-link', { href: 'https://blog.cryptpad.fr/'}, Msg.blog),
-                h('a.nav-item.nav-link', { href: '/features.html'}, Msg.features),
-                h('a.nav-item.nav-link', { href: '/privacy.html'}, Msg.privacy),
+                //h('a.nav-item.nav-link', { href: 'https://blog.cryptpad.fr/'}, Msg.blog),
+                //h('a.nav-item.nav-link', { href: '/features.html'}, Msg.features),
+                //h('a.nav-item.nav-link', { href: '/privacy.html'}, Msg.privacy),
                 //h('a.nav-item.nav-link', { href: '/contact.html'}, Msg.contact),
                 //h('a.nav-item.nav-link', { href: '/about.html'}, Msg.about),
             ].concat(rightLinks))

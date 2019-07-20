@@ -166,7 +166,7 @@ define([
                     ])*/
                 ]),
             ]),
-            Pages.infopageFooter(),
+            //Pages.infopageFooter(),
         ];
     };
 });
