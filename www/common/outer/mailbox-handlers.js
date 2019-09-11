@@ -153,6 +153,9 @@ define([
         Object.keys(msg.content).forEach(function (key) {
             friend[key] = msg.content[key];
         });
+        if (ctx.store.messenger) {
+            ctx.store.messenger.onFriendUpdate(curve, friend);
+        }
         ctx.updateMetadata();
         cb(true);
     };
@@ -199,6 +202,111 @@ define([
         if (old && old.data && old.data.hash === hash) {
             delete channels[channel];
         }
+    };
+
+    // Hide duplicates when receiving a SUPPORT_MESSAGE notification
+    var supportMessage = false;
+    handlers['SUPPORT_MESSAGE'] = function (ctx, box, data, cb) {
+        if (supportMessage) { return void cb(true); }
+        supportMessage = true;
+        cb();
+    };
+
+    // Incoming edit rights request: add data before sending it to inner
+    handlers['REQUEST_PAD_ACCESS'] = function (ctx, box, data, cb) {
+        var msg = data.msg;
+        var content = msg.content;
+
+        if (msg.author !== content.user.curvePublic) { return void cb(true); }
+
+        var channel = content.channel;
+        var res = ctx.store.manager.findChannel(channel);
+
+        if (!res.length) { return void cb(true); }
+
+        var edPublic = ctx.store.proxy.edPublic;
+        var title, href;
+        if (!res.some(function (obj) {
+            if (obj.data &&
+                Array.isArray(obj.data.owners) && obj.data.owners.indexOf(edPublic) !== -1 &&
+                obj.data.href) {
+                    href = obj.data.href;
+                    title = obj.data.filename || obj.data.title;
+                    return true;
+            }
+        })) { return void cb(true); }
+
+        content.title = title;
+        content.href = href;
+        cb(false);
+    };
+
+    handlers['GIVE_PAD_ACCESS'] = function (ctx, box, data, cb) {
+        var msg = data.msg;
+        var content = msg.content;
+
+        if (msg.author !== content.user.curvePublic) { return void cb(true); }
+
+        var channel = content.channel;
+        var res = ctx.store.manager.findChannel(channel);
+
+        var title;
+        res.forEach(function (obj) {
+            if (obj.data && !obj.data.href) {
+                if (!title) { title = obj.data.filename || obj.data.title; }
+                obj.data.href = content.href;
+            }
+        });
+
+        content.title = title || content.title;
+        cb(false);
+    };
+
+    // Hide duplicates when receiving an ADD_OWNER notification:
+    var addOwners = {};
+    handlers['ADD_OWNER'] = function (ctx, box, data, cb) {
+        var msg = data.msg;
+        var content = msg.content;
+
+        if (msg.author !== content.user.curvePublic) { return void cb(true); }
+        if (!content.href || !content.title || !content.channel) {
+            console.log('Remove invalid notification');
+            return void cb(true);
+        }
+
+        var channel = content.channel;
+
+        if (addOwners[channel]) { return void cb(true); }
+        addOwners[channel] = {
+            type: box.type,
+            hash: data.hash
+        };
+
+        cb(false);
+    };
+    removeHandlers['ADD_OWNER'] = function (ctx, box, data) {
+        var channel = data.content.channel;
+        if (addOwners[channel]) {
+            delete addOwners[channel];
+        }
+    };
+
+    handlers['RM_OWNER'] = function (ctx, box, data, cb) {
+        var msg = data.msg;
+        var content = msg.content;
+
+        if (msg.author !== content.user.curvePublic) { return void cb(true); }
+        if (!content.channel) {
+            console.log('Remove invalid notification');
+            return void cb(true);
+        }
+
+        var channel = content.channel;
+
+        if (addOwners[channel] && content.pending) {
+            return void cb(false, addOwners[channel]);
+        }
+        cb(false);
     };
 
     return {

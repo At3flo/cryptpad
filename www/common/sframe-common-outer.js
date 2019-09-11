@@ -50,9 +50,10 @@ define([
                 '/common/outer/local-store.js',
                 '/customize/application_config.js',
                 '/common/test.js',
+                '/common/userObject.js',
             ], waitFor(function (_CpNfOuter, _Cryptpad, _Crypto, _Cryptget, _SFrameChannel,
             _FilePicker, _Share, _Messaging, _Notifier, _Hash, _Util, _Realtime,
-            _Constants, _Feedback, _LocalStore, _AppConfig, _Test) {
+            _Constants, _Feedback, _LocalStore, _AppConfig, _Test, _UserObject) {
                 CpNfOuter = _CpNfOuter;
                 Cryptpad = _Cryptpad;
                 Crypto = Utils.Crypto = _Crypto;
@@ -68,6 +69,7 @@ define([
                 Utils.Constants = _Constants;
                 Utils.Feedback = _Feedback;
                 Utils.LocalStore = _LocalStore;
+                Utils.UserObject = _UserObject;
                 AppConfig = _AppConfig;
                 Test = _Test;
 
@@ -271,24 +273,28 @@ define([
             Utils.crypto = Utils.Crypto.createEncryptor(Utils.secret.keys);
             var parsed = Utils.Hash.parsePadUrl(window.location.href);
             if (!parsed.type) { throw new Error(); }
-            var defaultTitle = Utils.Hash.getDefaultName(parsed);
-            var edPublic;
+            var defaultTitle = Utils.UserObject.getDefaultName(parsed);
+            var edPublic, curvePublic, notifications, isTemplate;
             var forceCreationScreen = cfg.useCreationScreen &&
                                       sessionStorage[Utils.Constants.displayPadCreationScreen];
             delete sessionStorage[Utils.Constants.displayPadCreationScreen];
             var updateMeta = function () {
                 //console.log('EV_METADATA_UPDATE');
-                var metaObj, isTemplate;
+                var metaObj;
                 nThen(function (waitFor) {
                     Cryptpad.getMetadata(waitFor(function (err, m) {
                         if (err) { console.log(err); }
                         metaObj = m;
                         edPublic = metaObj.priv.edPublic; // needed to create an owned pad
+                        curvePublic = metaObj.user.curvePublic;
+                        notifications = metaObj.user.notifications;
                     }));
-                    Cryptpad.isTemplate(window.location.href, waitFor(function (err, t) {
-                        if (err) { console.log(err); }
-                        isTemplate = t;
-                    }));
+                    if (typeof(isTemplate) === "undefined") {
+                        Cryptpad.isTemplate(window.location.href, waitFor(function (err, t) {
+                            if (err) { console.log(err); }
+                            isTemplate = t;
+                        }));
+                    }
                 }).nThen(function (/*waitFor*/) {
                     metaObj.doc = {
                         defaultTitle: defaultTitle,
@@ -317,6 +323,9 @@ define([
                         channel: secret.channel,
                         enableSF: localStorage.CryptPad_SF === "1", // TODO to remove when enabled by default
                         devMode: localStorage.CryptPad_dev === "1",
+                        fromFileData: Cryptpad.fromFileData ? {
+                            title: Cryptpad.fromFileData.title
+                        } : undefined,
                     };
                     if (window.CryptPad_newSharedFolder) {
                         additionalPriv.newSharedFolder = window.CryptPad_newSharedFolder;
@@ -356,6 +365,8 @@ define([
             Cryptpad.onNewVersionReconnect.reg(function () {
                 sframeChan.event("EV_NEW_VERSION");
             });
+
+
 
             // Put in the following function the RPC queries that should also work in filepicker
             var addCommonRpc = function (sframeChan) {
@@ -403,8 +414,12 @@ define([
                     });
                 });
 
-                Cryptpad.mailbox.onEvent.reg(function (data) {
-                    sframeChan.event('EV_MAILBOX_EVENT', data);
+                Cryptpad.mailbox.onEvent.reg(function (data, cb) {
+                    sframeChan.query('EV_MAILBOX_EVENT', data, function (err, obj) {
+                        if (!cb) { return; }
+                        if (err) { return void cb({error: err}); }
+                        cb(obj);
+                    });
                 });
                 sframeChan.on('Q_MAILBOX_COMMAND', function (data, cb) {
                     Cryptpad.mailbox.execCommand(data, cb);
@@ -465,6 +480,43 @@ define([
                 Cryptpad.getPadAttribute('title', function (err, data) {
                     cb (!err && typeof (data) === "string");
                 });
+            });
+
+            sframeChan.on('Q_ACCEPT_OWNERSHIP', function (data, cb) {
+                var _data = {
+                    password: data.password,
+                    href: data.href,
+                    channel: data.channel,
+                    title: data.title,
+                    owners: data.metadata.owners,
+                    expire: data.metadata.expire,
+                    forceSave: true
+                };
+                Cryptpad.setPadTitle(_data, function (err) {
+                    cb({error: err});
+                });
+
+                // Also add your mailbox to the metadata object
+                var padParsed = Utils.Hash.parsePadUrl(data.href);
+                var padSecret = Utils.Hash.getSecrets(padParsed.type, padParsed.hash, data.password);
+                var padCrypto = Utils.Crypto.createEncryptor(padSecret.keys);
+                try {
+                    var value = {};
+                    value[edPublic] = padCrypto.encrypt(JSON.stringify({
+                        notifications: notifications,
+                        curvePublic: curvePublic
+                    }));
+                    var msg = {
+                        channel: data.channel,
+                        command: 'ADD_MAILBOX',
+                        value: value
+                    };
+                    Cryptpad.setPadMetadata(msg, function (res) {
+                        if (res.error) { console.error(res.error); }
+                    });
+                } catch (err) {
+                    return void console.error(err);
+                }
             });
 
             sframeChan.on('Q_IMPORT_MEDIATAG', function (obj, cb) {
@@ -735,6 +787,7 @@ define([
             var initShareModal = function (cfg) {
                 cfg.hashes = hashes;
                 cfg.password = password;
+                cfg.isTemplate = isTemplate;
                 // cfg.hidden means pre-loading the filepicker while keeping it hidden.
                 // if cfg.hidden is true and the iframe already exists, do nothing
                 if (!ShareModal.$iframe) {
@@ -808,6 +861,22 @@ define([
                 });
             });
 
+            sframeChan.on('Q_GET_FILE_THUMBNAIL', function (data, cb) {
+                if (!Cryptpad.fromFileData || !Cryptpad.fromFileData.href) {
+                    return void cb({
+                        error: "EINVAL",
+                    });
+                }
+                var key = getKey(Cryptpad.fromFileData.href, Cryptpad.fromFileData.channel);
+                Utils.LocalStore.getThumbnail(key, function (e, data) {
+                    if (data === "EMPTY") { data = null; }
+                    cb({
+                        error: e,
+                        data: data
+                    });
+                });
+            });
+
             sframeChan.on('EV_GOTO_URL', function (url) {
                 if (url) {
                     window.location.href = url;
@@ -835,13 +904,6 @@ define([
                 Cryptpad.setLanguage(data, cb);
             });
 
-            sframeChan.on('Q_CLEAR_OWNED_CHANNEL', function (channel, cb) {
-                Cryptpad.clearOwnedChannel(channel, cb);
-            });
-            sframeChan.on('Q_REMOVE_OWNED_CHANNEL', function (channel, cb) {
-                Cryptpad.removeOwnedChannel(channel, cb);
-            });
-
             sframeChan.on('Q_GET_ALL_TAGS', function (data, cb) {
                 Cryptpad.listAllTags(function (err, tags) {
                     cb({
@@ -853,7 +915,7 @@ define([
 
             sframeChan.on('Q_PAD_PASSWORD_CHANGE', function (data, cb) {
                 var href = data.href || window.location.href;
-                Cryptpad.changePadPassword(Cryptget, href, data.password, edPublic, cb);
+                Cryptpad.changePadPassword(Cryptget, Crypto, href, data.password, edPublic, cb);
             });
 
             sframeChan.on('Q_CHANGE_USER_PASSWORD', function (data, cb) {
@@ -868,6 +930,9 @@ define([
                 Cryptpad.removeLoginBlock(data, cb);
             });
 
+            // It seems we have performance issues when we open and close a lot of channels over
+            // the same network, maybe a memory leak. To fix this, we kill and create a new
+            // network every 30 cryptget calls (1 call = 1 channel)
             var cgNetwork;
             var whenCGReady = function (cb) {
                 if (cgNetwork && cgNetwork !== true) { console.log(cgNetwork); return void cb(); }
@@ -884,7 +949,12 @@ define([
                             error: err,
                             data: val
                         });
-                    }, data.opts);
+                    }, data.opts, function (progress) {
+                        sframeChan.event("EV_CRYPTGET_PROGRESS", {
+                            hash: data.hash,
+                            progress: progress,
+                        });
+                    });
                 };
                 //return void todo();
                 if (i > 30) {
@@ -939,6 +1009,73 @@ define([
 
             Cryptpad.onTimeoutEvent.reg(function () {
                 sframeChan.event('EV_WORKER_TIMEOUT');
+            });
+
+            sframeChan.on('EV_GIVE_ACCESS', function (data, cb) {
+                Cryptpad.padRpc.giveAccess(data, cb);
+            });
+            // REQUEST_ACCESS is used both to check IF we can contact an owner (send === false)
+            // AND also to send the request if we want (send === true)
+            sframeChan.on('Q_REQUEST_ACCESS', function (send, cb) {
+                if (readOnly && hashes.editHash) {
+                    return void cb({error: 'ALREADYKNOWN'});
+                }
+                var owner, owners;
+                var crypto = Crypto.createEncryptor(secret.keys);
+                nThen(function (waitFor) {
+                    // Try to get the owner's mailbox from the pad metadata first.
+                    // If it's is an older owned pad, check if the owner is a friend
+                    // or an acquaintance (from async-store directly in requestAccess)
+                    Cryptpad.getPadMetadata({
+                        channel: secret.channel
+                    }, waitFor(function (obj) {
+                        obj = obj || {};
+                        if (obj.error) { return; }
+
+                        owners = obj.owners;
+
+                        var mailbox;
+                        // Get the first available mailbox (the field can be an string or an object)
+                        // TODO maybe we should send the request to all the owners?
+                        if (typeof (obj.mailbox) === "string") {
+                            mailbox = obj.mailbox;
+                        } else if (obj.mailbox && obj.owners && obj.owners.length) {
+                            mailbox = obj.mailbox[obj.owners[0]];
+                        }
+                        if (mailbox) {
+                            try {
+                                var dataStr = crypto.decrypt(mailbox, true, true);
+                                var data = JSON.parse(dataStr);
+                                if (!data.notifications || !data.curvePublic) { return; }
+                                owner = data;
+                            } catch (e) { console.error(e); }
+                        }
+                    }));
+                }).nThen(function () {
+                    // If we are just checking (send === false) and there is a mailbox field, cb state true
+                    // If there is no mailbox, we'll have to check if an owner is a friend in the worker
+                    if (owner && !send) {
+                        return void cb({state: true});
+                    }
+                    Cryptpad.padRpc.requestAccess({
+                        send: send,
+                        channel: secret.channel,
+                        owner: owner,
+                        owners: owners
+                    }, cb);
+                });
+            });
+
+            sframeChan.on('Q_GET_PAD_METADATA', function (data, cb) {
+                if (!data || !data.channel) {
+                    data = {
+                        channel: secret.channel
+                    };
+                }
+                Cryptpad.getPadMetadata(data, cb);
+            });
+            sframeChan.on('Q_SET_PAD_METADATA', function (data, cb) {
+                Cryptpad.setPadMetadata(data, cb);
             });
 
             if (cfg.messaging) {
@@ -1056,18 +1193,27 @@ define([
 
                 // Update metadata values and send new metadata inside
                 parsed = Utils.Hash.parsePadUrl(window.location.href);
-                defaultTitle = Utils.Hash.getDefaultName(parsed);
+                defaultTitle = Utils.UserObject.getDefaultName(parsed);
                 hashes = Utils.Hash.getHashes(secret);
                 readOnly = false;
                 updateMeta();
 
-                var rtConfig = {};
+                var rtConfig = {
+                    metadata: {}
+                };
                 if (data.owned) {
-                    rtConfig.owners = [edPublic];
+                    rtConfig.metadata.owners = [edPublic];
+                    rtConfig.metadata.mailbox = {};
+                    rtConfig.metadata.mailbox[edPublic] = Utils.crypto.encrypt(JSON.stringify({
+                        notifications: notifications,
+                        curvePublic: curvePublic
+                    }));
                 }
                 if (data.expire) {
-                    rtConfig.expire = data.expire;
+                    rtConfig.metadata.expire = data.expire;
                 }
+                rtConfig.metadata.validateKey = (secret.keys && secret.keys.validateKey) || undefined;
+
                 Utils.rtConfig = rtConfig;
                 nThen(function(waitFor) {
                     if (data.templateId) {
@@ -1080,14 +1226,22 @@ define([
                         }));
                     }
                 }).nThen(function () {
+                    var cryptputCfg = $.extend(true, {}, rtConfig, {password: password});
                     if (data.template) {
                         // Pass rtConfig to useTemplate because Cryptput will create the file and
                         // we need to have the owners and expiration time in the first line on the
                         // server
-                        var cryptputCfg = $.extend(true, {}, rtConfig, {password: password});
                         Cryptpad.useTemplate({
                             href: data.template
                         }, Cryptget, function () {
+                            startRealtime();
+                            cb();
+                        }, cryptputCfg);
+                        return;
+                    }
+                    // if we open a new code from a file
+                    if (Cryptpad.fromFileData) {
+                        Cryptpad.useFile(Cryptget, function () {
                             startRealtime();
                             cb();
                         }, cryptputCfg);

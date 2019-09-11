@@ -38,21 +38,34 @@ var app = debuggable('app', Express());
 
 var httpsOpts;
 
-var DEV_MODE = !!process.env.DEV
-if (DEV_MODE) {
-    console.log("DEV MODE ENABLED");
-}
+// mode can be FRESH (default), DEV, or PACKAGE
 
-var FRESH_MODE = !!process.env.FRESH;
 var FRESH_KEY = '';
-if (FRESH_MODE) {
+var FRESH_MODE = true;
+var DEV_MODE = false;
+if (process.env.PACKAGE) {
+// `PACKAGE=1 node server` uses the version string from package.json as the cache string
+    console.log("PACKAGE MODE ENABLED");
+    FRESH_MODE = false;
+    DEV_MODE = false;
+} else if (process.env.DEV) {
+// `DEV=1 node server` will use a random cache string on every page reload
+    console.log("DEV MODE ENABLED");
+    FRESH_MODE = false;
+    DEV_MODE = true;
+} else {
+// `FRESH=1 node server` will set a random cache string when the server is launched
+// and use it for the process lifetime or until it is reset from the admin panel
     console.log("FRESH MODE ENABLED");
     FRESH_KEY = +new Date();
 }
+
 config.flushCache = function () {
     FRESH_KEY = +new Date();
+    if (!(DEV_MODE || FRESH_MODE)) { FRESH_MODE = true; }
+    if (!config.log) { return; }
+    config.log.info("UPDATING_FRESH_KEY", FRESH_KEY);
 };
-
 
 const clone = (x) => (JSON.parse(JSON.stringify(x)));
 
@@ -105,6 +118,18 @@ app.head(/^\/common\/feedback\.html/, function (req, res, next) {
 }());
 
 app.use(function (req, res, next) {
+    if (req.method === 'OPTIONS' && /\/blob\//.test(req.url)) {
+        console.log(req.url);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Content-Range,Range');
+        res.setHeader('Access-Control-Max-Age', 1728000);
+        res.setHeader('Content-Type', 'application/octet-stream; charset=utf-8');
+        res.setHeader('Content-Length', 0);
+        res.statusCode = 204;
+        return void res.end();
+    }
+
     setHeaders(req, res);
     if (/[\?\&]ver=[^\/]+$/.test(req.url)) { res.setHeader("Cache-Control", "max-age=31536000"); }
     next();
@@ -193,6 +218,7 @@ app.get('/api/config', function(req, res){
             httpUnsafeOrigin: config.httpUnsafeOrigin,
             adminEmail: config.adminEmail,
             adminKeys: admins,
+            inactiveTime: config.inactiveTime,
             supportMailbox: config.supportMailboxPublicKey
         }, null, '\t'),
         'obj.httpSafeOrigin = ' + (function () {
@@ -247,7 +273,7 @@ var historyKeeper;
 
 var log;
 
-// Initialize tasks, then rpc, then store, then history keeper and then start the server
+// Initialize logging, the the store, then tasks, then rpc, then history keeper and then start the server
 var nt = nThen(function (w) {
     // set up logger
     var Logger = require("./lib/log");
@@ -261,13 +287,13 @@ var nt = nThen(function (w) {
         config.store = _store;
     }));
 }).nThen(function (w) {
-    if (!config.enableTaskScheduling) { return; }
     var Tasks = require("./storage/tasks");
     Tasks.create(config, w(function (e, tasks) {
         if (e) {
             throw e;
         }
         config.tasks = tasks;
+        if (config.disableIntegratedTasks) { return; }
         setInterval(function () {
             tasks.runAll(function (err) {
                 if (err) {
@@ -296,7 +322,8 @@ var nt = nThen(function (w) {
         tasks: config.tasks,
         rpc: rpc,
         store: config.store,
-        log: log
+        log: log,
+        retainData: Boolean(config.retainData),
     };
     historyKeeper = HK.create(hkConfig);
 }).nThen(function () {

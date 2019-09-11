@@ -138,7 +138,7 @@ define([
         }
         postMessage("SET", {
             key:['drive'],
-            value: data
+            value: data.drive
         }, function (obj) {
             cb(obj);
         }, {
@@ -254,8 +254,12 @@ define([
     common.clearOwnedChannel = function (channel, cb) {
         postMessage("CLEAR_OWNED_CHANNEL", channel, cb);
     };
-    common.removeOwnedChannel = function (channel, cb) {
-        postMessage("REMOVE_OWNED_CHANNEL", channel, cb);
+    // "force" allows you to delete your drive ID
+    common.removeOwnedChannel = function (channel, cb, force) {
+        postMessage("REMOVE_OWNED_CHANNEL", {
+            channel: channel,
+            force: force
+        }, cb);
     };
 
     common.getDeletedPads = function (data, cb) {
@@ -567,6 +571,67 @@ define([
         });
     };
 
+    common.useFile = function (Crypt, cb, optsPut) {
+        var fileHost = Config.fileHost || window.location.origin;
+        var data = common.fromFileData;
+        var parsed = Hash.parsePadUrl(data.href);
+        var parsed2 = Hash.parsePadUrl(window.location.href);
+        var hash = parsed.hash;
+        var name = data.title;
+        var secret = Hash.getSecrets('file', hash, data.password);
+        var src = fileHost + Hash.getBlobPathFromHex(secret.channel);
+        var key = secret.keys && secret.keys.cryptKey;
+
+        var u8;
+        var res;
+        var mode;
+        var val;
+        Nthen(function(waitFor) {
+            Util.fetch(src, waitFor(function (err, _u8) {
+                if (err) { return void waitFor.abort(); }
+                u8 = _u8;
+            }));
+        }).nThen(function (waitFor) {
+            require(["/file/file-crypto.js"], waitFor(function (FileCrypto) {
+                FileCrypto.decrypt(u8, key, waitFor(function (err, _res) {
+                    if (err || !_res.content) { return void waitFor.abort(); }
+                    res = _res;
+                }));
+            }));
+        }).nThen(function (waitFor) {
+            var ext = Util.parseFilename(data.title).ext;
+            if (!ext) {
+                mode = "text";
+                return;
+            }
+            require(["/common/modes.js"], waitFor(function (Modes) {
+                Modes.list.some(function (fType) {
+                    if (fType.ext === ext) {
+                        mode = fType.mode;
+                        return true;
+                    }
+                });
+            }));
+        }).nThen(function (waitFor) {
+            var reader = new FileReader();
+            reader.addEventListener('loadend', waitFor(function (e) {
+                val = {
+                    content: e.srcElement.result,
+                    highlightMode: mode,
+                    metadata: {
+                        defaultTitle: name,
+                        title: name,
+                        type: "code",
+                    },
+                };
+            }));
+            reader.readAsText(res.content);
+        }).nThen(function () {
+            Crypt.put(parsed2.hash, JSON.stringify(val), cb, optsPut);
+        });
+
+    };
+
     // Forget button
     common.moveToTrash = function (cb, href) {
         href = href || window.location.href;
@@ -583,7 +648,6 @@ define([
         data.href = parsed.getUrl({present: parsed.present});
 
         if (typeof (data.title) !== "string") { return cb('Missing title'); }
-        if (data.title.trim() === "") { data.title = Hash.getDefaultName(parsed); }
 
         if (common.initialPath) {
             if (!data.path) {
@@ -692,8 +756,23 @@ define([
     pad.onDisconnectEvent = Util.mkEvent();
     pad.onConnectEvent = Util.mkEvent();
     pad.onErrorEvent = Util.mkEvent();
+    pad.onMetadataEvent = Util.mkEvent();
 
-    common.changePadPassword = function (Crypt, href, newPassword, edPublic, cb) {
+    pad.requestAccess = function (data, cb) {
+        postMessage("REQUEST_PAD_ACCESS", data, cb);
+    };
+    pad.giveAccess = function (data, cb) {
+        postMessage("GIVE_PAD_ACCESS", data, cb);
+    };
+
+    common.setPadMetadata = function (data, cb) {
+        postMessage('SET_PAD_METADATA', data, cb);
+    };
+    common.getPadMetadata = function (data, cb) {
+        postMessage('GET_PAD_METADATA', data, cb);
+    };
+
+    common.changePadPassword = function (Crypt, Crypto, href, newPassword, edPublic, cb) {
         if (!href) { return void cb({ error: 'EINVAL_HREF' }); }
         var parsed = Hash.parsePadUrl(href);
         if (!parsed.hash) { return void cb({ error: 'EINVAL_HREF' }); }
@@ -701,6 +780,8 @@ define([
         var warning = false;
         var newHash, newRoHref;
         var oldChannel;
+        var oldSecret;
+        var oldMetadata;
         var newSecret;
 
         if (parsed.hashData.version >= 2) {
@@ -717,25 +798,61 @@ define([
 
         var optsGet = {};
         var optsPut = {
-            password: newPassword
+            password: newPassword,
+            metadata: {}
         };
+
+
         Nthen(function (waitFor) {
             if (parsed.hashData && parsed.hashData.password) {
                 common.getPadAttribute('password', waitFor(function (err, password) {
                     optsGet.password = password;
                 }), href);
             }
-            common.getPadAttribute('owners', waitFor(function (err, owners) {
-                if (!Array.isArray(owners) || owners.indexOf(edPublic) === -1) {
-                    // We're not an owner, we shouldn't be able to change the password!
-                    waitFor.abort();
-                    return void cb({ error: 'EPERM' });
+        }).nThen(function (waitFor) {
+            oldSecret = Hash.getSecrets(parsed.type, parsed.hash, optsGet.password);
+            oldChannel = oldSecret.channel;
+            common.getPadMetadata({channel: oldChannel}, waitFor(function (metadata) {
+                oldMetadata = metadata;
+            }));
+        }).nThen(function (waitFor) {
+            // Get owners, mailbox and expiration time
+
+            var owners = oldMetadata.owners;
+            if (!Array.isArray(owners) || owners.indexOf(edPublic) === -1) {
+                // We're not an owner, we shouldn't be able to change the password!
+                waitFor.abort();
+                return void cb({ error: 'EPERM' });
+            }
+            optsPut.metadata.owners = owners;
+
+            var mailbox = oldMetadata.mailbox;
+            if (mailbox) {
+                // Create the encryptors to be able to decrypt and re-encrypt the mailboxes
+                var oldCrypto = Crypto.createEncryptor(oldSecret.keys);
+                var newCrypto = Crypto.createEncryptor(newSecret.keys);
+
+                var m;
+                if (typeof(mailbox) === "string") {
+                    try {
+                        m = newCrypto.encrypt(oldCrypto.decrypt(mailbox, true, true));
+                    } catch (e) {}
+                } else if (mailbox && typeof(mailbox) === "object") {
+                    m = {};
+                    Object.keys(mailbox).forEach(function (ed) {
+                        console.log(mailbox[ed]);
+                        try {
+                            m[ed] = newCrypto.encrypt(oldCrypto.decrypt(mailbox[ed], true, true));
+                        } catch (e) {
+                            console.error(e);
+                        }
+                    });
                 }
-                optsPut.owners = owners;
-            }), href);
-            common.getPadAttribute('expire', waitFor(function (err, expire) {
-                optsPut.expire = (expire - (+new Date())) / 1000; // Lifetime in seconds
-            }), href);
+                optsPut.metadata.mailbox = m;
+            }
+
+            var expire = oldMetadata.expire;
+            optsPut.metadata.expire = (expire - (+new Date())) / 1000; // Lifetime in seconds
         }).nThen(function (waitFor) {
             Crypt.get(parsed.hash, waitFor(function (err, val) {
                 if (err) {
@@ -750,8 +867,6 @@ define([
                 }), optsPut);
             }), optsGet);
         }).nThen(function (waitFor) {
-            var secret = Hash.getSecrets(parsed.type, parsed.hash, optsGet.password);
-            oldChannel = secret.channel;
             pad.leavePad({
                 channel: oldChannel
             }, waitFor());
@@ -943,7 +1058,7 @@ define([
                     common.logoutFromAll(waitFor(function () {
                         postMessage("DISCONNECT");
                     }));
-                }));
+                }), true);
             }
         }).nThen(function (waitFor) {
             if (!oldIsOwned) {
@@ -1122,6 +1237,7 @@ define([
         PAD_DISCONNECT: common.padRpc.onDisconnectEvent.fire,
         PAD_CONNECT: common.padRpc.onConnectEvent.fire,
         PAD_ERROR: common.padRpc.onErrorEvent.fire,
+        PAD_METADATA: common.padRpc.onMetadataEvent.fire,
         // Drive
         DRIVE_LOG: common.drive.onLog.fire,
         DRIVE_CHANGE: common.drive.onChange.fire,
@@ -1230,7 +1346,7 @@ define([
                     console.log(parsed);
                     return;
                 } else {
-                    console.log(parsed);
+                    //console.log(parsed);
                 }
                 Util.fetch(parsed.href, waitFor(function (err, arraybuffer) {
                     if (err) { return void console.log(err); }
@@ -1263,6 +1379,12 @@ define([
                 messenger: rdyCfg.messenger, // Boolean
                 driveEvents: rdyCfg.driveEvents // Boolean
             };
+            // if a pad is created from a file
+            if (sessionStorage[Constants.newPadFileData]) {
+                common.fromFileData = JSON.parse(sessionStorage[Constants.newPadFileData]);
+                delete sessionStorage[Constants.newPadFileData];
+            }
+
             if (sessionStorage[Constants.newPadPathKey]) {
                 common.initialPath = sessionStorage[Constants.newPadPathKey];
                 delete sessionStorage[Constants.newPadPathKey];
@@ -1287,10 +1409,12 @@ define([
                             errEv.preventDefault();
                             errEv.stopPropagation();
                             noWorker = true;
+                            worker.terminate();
                             w();
                         };
                         worker.onmessage = function (ev) {
                             if (ev.data === "OK") {
+                                worker.terminate();
                                 w();
                             }
                         };
