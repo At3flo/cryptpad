@@ -249,13 +249,13 @@ define([
         if (msg.author !== content.user.curvePublic) { return void cb(true); }
 
         var channel = content.channel;
-        var res = ctx.store.manager.findChannel(channel);
+        var res = ctx.store.manager.findChannel(channel, true);
 
         var title;
         res.forEach(function (obj) {
             if (obj.data && !obj.data.href) {
                 if (!title) { title = obj.data.filename || obj.data.title; }
-                obj.data.href = content.href;
+                obj.userObject.setHref(channel, null, content.href);
             }
         });
 
@@ -270,12 +270,12 @@ define([
         var content = msg.content;
 
         if (msg.author !== content.user.curvePublic) { return void cb(true); }
-        if (!content.href || !content.title || !content.channel) {
+        if (!content.teamChannel && !(content.href && content.title && content.channel)) {
             console.log('Remove invalid notification');
             return void cb(true);
         }
 
-        var channel = content.channel;
+        var channel = content.channel || content.teamChannel;
 
         if (addOwners[channel]) { return void cb(true); }
         addOwners[channel] = {
@@ -286,7 +286,7 @@ define([
         cb(false);
     };
     removeHandlers['ADD_OWNER'] = function (ctx, box, data) {
-        var channel = data.content.channel;
+        var channel = data.content.channel || data.content.teamChannel;
         if (addOwners[channel]) {
             delete addOwners[channel];
         }
@@ -297,12 +297,23 @@ define([
         var content = msg.content;
 
         if (msg.author !== content.user.curvePublic) { return void cb(true); }
-        if (!content.channel) {
+        if (!content.channel && !content.teamChannel) {
             console.log('Remove invalid notification');
             return void cb(true);
         }
 
-        var channel = content.channel;
+        var channel = content.channel || content.teamChannel;
+
+        // If our ownership rights for a team have been removed, update the owner flag
+        if (content.teamChannel) {
+            var teams = ctx.store.proxy.teams || {};
+            Object.keys(teams).some(function (id) {
+                if (teams[id].channel === channel) {
+                    teams[id].owner = false;
+                    return true;
+                }
+            });
+        }
 
         if (addOwners[channel] && content.pending) {
             return void cb(false, addOwners[channel]);
@@ -321,7 +332,16 @@ define([
             return void cb(true);
         }
 
-        if (invitedTo[content.team.channel]) { return void cb(true); }
+        var invited = invitedTo[content.team.channel];
+        if (invited) {
+            console.log('removing old invitation');
+            cb(false, invited);
+            invitedTo[content.team.channel] = {
+                type: box.type,
+                hash: data.hash
+            };
+            return;
+        }
 
         var myTeams = Util.find(ctx, ['store', 'proxy', 'teams']) || {};
         var alreadyMember = Object.keys(myTeams).some(function (k) {
@@ -330,7 +350,10 @@ define([
         });
         if (alreadyMember) { return void cb(true); }
 
-        invitedTo[content.team.channel] = true;
+        invitedTo[content.team.channel] = {
+            type: box.type,
+            hash: data.hash
+        };
 
         cb(false);
     };
@@ -347,6 +370,10 @@ define([
         if (!content.teamChannel) {
             console.log('Remove invalid notification');
             return void cb(true);
+        }
+
+        if (invitedTo[content.teamChannel] && content.pending) {
+            return void cb(true, invitedTo[content.teamChannel]);
         }
 
         cb(false);
@@ -387,6 +414,40 @@ define([
 
         cb(false);
     };
+
+    handlers['TEAM_EDIT_RIGHTS'] = function (ctx, box, data, cb) {
+        var msg = data.msg;
+        var content = msg.content;
+
+        if (msg.author !== content.user.curvePublic) { return void cb(true); }
+        if (!content.teamData) {
+            console.log('Remove invalid notification');
+            return void cb(true);
+        }
+
+        // Make sure we are a member of this team
+        var myTeams = Util.find(ctx, ['store', 'proxy', 'teams']) || {};
+        var teamId;
+        var team;
+        Object.keys(myTeams).some(function (k) {
+            var _team = myTeams[k];
+            if (_team.channel === content.teamData.channel) {
+                teamId = k;
+                team = _team;
+                return true;
+            }
+        });
+        if (!teamId) { return void cb(true); }
+
+        try {
+            var module = ctx.store.modules['team'];
+            // changeMyRights returns true if we can't change our rights
+            module.changeMyRights(teamId, content.state, content.teamData);
+        } catch (e) { console.error(e); }
+
+        cb(true);
+    };
+
 
 
     return {

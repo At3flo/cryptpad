@@ -79,8 +79,10 @@ define([
                     waitFor.abort();
                     return void cb(err || 'EEMPTY');
                 }
-                delete val.owners;
-                delete val.expire;
+                if (!val.fileType) {
+                    delete val.owners;
+                    delete val.expire;
+                }
                 Util.extend(data, val);
                 if (data.href) { data.href = base + data.href; }
                 if (data.roHref) { data.roHref = base + data.roHref; }
@@ -104,11 +106,13 @@ define([
         var channel = data.channel;
         var owners = data.owners || [];
         var pending_owners = data.pending_owners || [];
+        var teams = priv.teams;
+        var teamOwner = data.teamId;
 
         var redrawAll = function () {};
 
-        var div1 = h('div.cp-share-friends.cp-share-column.cp-ownership');
-        var div2 = h('div.cp-share-friends.cp-share-column.cp-ownership');
+        var div1 = h('div.cp-usergrid-user.cp-share-column.cp-ownership');
+        var div2 = h('div.cp-usergrid-user.cp-share-column.cp-ownership');
         var $div1 = $(div1);
         var $div2 = $(div2);
 
@@ -124,24 +128,26 @@ define([
                         return true;
                     }
                 });
+                Object.keys(teams).some(function (id) {
+                    if (teams[id].edPublic === ed) {
+                        f = teams[id];
+                        f.teamId = id;
+                    }
+                });
                 if (ed === edPublic) {
                     f = f || user;
-                    if (f.name) {
-                        f.displayName = f.name;
-                        f.edPublic = edPublic;
-                    }
+                    if (f.name) { f.edPublic = edPublic; }
                 }
                 _owners[ed] = f || {
                     displayName: Messages._getKey('owner_unknownUser', [ed]),
-                    notifications: true,
                     edPublic: ed,
                 };
             });
             var msg = pending ? Messages.owner_removePendingText
                         : Messages.owner_removeText;
-            var removeCol = UIElements.getFriendsList(msg, {
+            var removeCol = UIElements.getUserGrid(msg, {
                 common: common,
-                friends: _owners,
+                data: _owners,
                 noFilter: true
             }, function () {
             });
@@ -152,14 +158,15 @@ define([
             var removeButton = h('button.no-margin', btnMsg);
             $(removeButton).click(function () {
                 // Check selection
-                var $sel = $div.find('.cp-share-friend.cp-selected');
+                var $sel = $div.find('.cp-usergrid-user.cp-selected');
                 var sel = $sel.toArray();
                 if (!sel.length) { return; }
                 var me = false;
                 var toRemove = sel.map(function (el) {
                     var ed = $(el).attr('data-ed');
                     if (!ed) { return; }
-                    if (ed === edPublic) { me = true; }
+                    if (teamOwner && teams[teamOwner] && teams[teamOwner].edPublic === ed) { me = true; }
+                    if (ed === edPublic && !teamOwner) { me = true; }
                     return ed;
                 }).filter(function (x) { return x; });
                 NThen(function (waitFor) {
@@ -175,7 +182,8 @@ define([
                     sframeChan.query('Q_SET_PAD_METADATA', {
                         channel: channel,
                         command: pending ? 'RM_PENDING_OWNERS' : 'RM_OWNERS',
-                        value: toRemove
+                        value: toRemove,
+                        teamId: teamOwner
                     }, waitFor(function (err, res) {
                         err = err || (res && res.error);
                         if (err) {
@@ -189,7 +197,8 @@ define([
                     }));
                 }).nThen(function (waitFor) {
                     sel.forEach(function (el) {
-                        var friend = friends[$(el).attr('data-curve')];
+                        var curve = $(el).attr('data-curve');
+                        var friend = curve === user.curvePublic ? user : friends[curve];
                         if (!friend) { return; }
                         common.mailbox.sendTo("RM_OWNER", {
                             channel: channel,
@@ -218,29 +227,60 @@ define([
 
         // Add owners column
         var drawAdd = function () {
+            var $div = $(h('div.cp-share-column'));
             var _friends = JSON.parse(JSON.stringify(friends));
             Object.keys(_friends).forEach(function (curve) {
                 if (owners.indexOf(_friends[curve].edPublic) !== -1 ||
-                    pending_owners.indexOf(_friends[curve].edPublic) !== -1) {
+                    pending_owners.indexOf(_friends[curve].edPublic) !== -1 ||
+                    !_friends[curve].notifications) {
                     delete _friends[curve];
                 }
             });
-            var addCol = UIElements.getFriendsList(Messages.owner_addText, {
+            var addCol = UIElements.getUserGrid(Messages.owner_addText, {
                 common: common,
-                friends: _friends
+                data: _friends
             }, function () {
                 //console.log(arguments);
             });
-            $div2 = $(addCol.div);
+            $div.append(addCol.div);
+
+            var teamsData = Util.tryParse(JSON.stringify(priv.teams)) || {};
+            Object.keys(teamsData).forEach(function (id) {
+                var t = teamsData[id];
+                t.teamId = id;
+                if (owners.indexOf(t.edPublic) !== -1 || pending_owners.indexOf(t.edPublic) !== -1) {
+                    delete teamsData[id];
+                }
+            });
+            var teamsList = UIElements.getUserGrid(Messages.owner_addTeamText, {
+                common: common,
+                noFilter: true,
+                data: teamsData
+            }, function () {});
+            $div.append(teamsList.div);
+
             // When clicking on the add button, we get the selected users.
             var addButton = h('button.no-margin', Messages.owner_addButton);
             $(addButton).click(function () {
                 // Check selection
-                var $sel = $div2.find('.cp-share-friend.cp-selected');
+                var $sel = $div.find('.cp-usergrid-user.cp-selected');
                 var sel = $sel.toArray();
                 if (!sel.length) { return; }
                 var toAdd = sel.map(function (el) {
-                    return friends[$(el).attr('data-curve')].edPublic;
+                    var curve = $(el).attr('data-curve');
+                    // If the pad is woned by a team, we can transfer ownership to ourselves
+                    if (curve === user.curvePublic && teamOwner) { return priv.edPublic; }
+                    var friend = friends[curve];
+                    if (!friend) { return; }
+                    return friend.edPublic;
+                }).filter(function (x) { return x; });
+                var toAddTeams = sel.map(function (el) {
+                    var team = teamsData[$(el).attr('data-teamid')];
+                    if (!team || !team.edPublic) { return; }
+                    return {
+                        edPublic: team.edPublic,
+                        id: $(el).attr('data-teamid')
+                    };
                 }).filter(function (x) { return x; });
 
                 NThen(function (waitFor) {
@@ -252,24 +292,61 @@ define([
                         }
                     }));
                 }).nThen(function (waitFor) {
-                    // Send the command
-                    sframeChan.query('Q_SET_PAD_METADATA', {
-                        channel: channel,
-                        command: 'ADD_PENDING_OWNERS',
-                        value: toAdd
-                    }, waitFor(function (err, res) {
-                        err = err || (res && res.error);
-                        if (err) {
-                            waitFor.abort();
-                            redrawAll();
-                            var text = err === "INSUFFICIENT_PERMISSIONS" ? Messages.fm_forbidden
-                                                                          : Messages.error;
-                            return void UI.warn(text);
-                        }
-                    }));
+                    // Add one of our teams as an owner
+                    if (toAddTeams.length) {
+                        // Send the command
+                        sframeChan.query('Q_SET_PAD_METADATA', {
+                            channel: channel,
+                            command: 'ADD_OWNERS',
+                            value: toAddTeams.map(function (obj) { return obj.edPublic; }),
+                            teamId: teamOwner
+                        }, waitFor(function (err, res) {
+                            err = err || (res && res.error);
+                            if (err) {
+                                waitFor.abort();
+                                redrawAll();
+                                var text = err === "INSUFFICIENT_PERMISSIONS" ?
+                                        Messages.fm_forbidden : Messages.error;
+                                return void UI.warn(text);
+                            }
+                            var isTemplate = priv.isTemplate || data.isTemplate;
+                            toAddTeams.forEach(function (obj) {
+                                sframeChan.query('Q_STORE_IN_TEAM', {
+                                    href: data.href || data.rohref,
+                                    password: data.password,
+                                    path: isTemplate ? ['template'] : undefined,
+                                    title: data.title || '',
+                                    teamId: obj.id
+                                }, waitFor(function (err) {
+                                    if (err) { return void console.error(err); }
+                                }));
+                            });
+                        }));
+                    }
+                }).nThen(function (waitFor) {
+                    // Offer ownership to a friend
+                    if (toAdd.length) {
+                        // Send the command
+                        sframeChan.query('Q_SET_PAD_METADATA', {
+                            channel: channel,
+                            command: 'ADD_PENDING_OWNERS',
+                            value: toAdd,
+                            teamId: teamOwner
+                        }, waitFor(function (err, res) {
+                            err = err || (res && res.error);
+                            if (err) {
+                                waitFor.abort();
+                                redrawAll();
+                                var text = err === "INSUFFICIENT_PERMISSIONS" ? Messages.fm_forbidden
+                                                                              : Messages.error;
+                                return void UI.warn(text);
+                            }
+                        }));
+                    }
                 }).nThen(function (waitFor) {
                     sel.forEach(function (el) {
-                        var friend = friends[$(el).attr('data-curve')];
+                        var curve = $(el).attr('data-curve');
+                        var friend = curve === user.curvePublic ? user : friends[curve];
                         if (!friend) { return; }
                         common.mailbox.sendTo("ADD_OWNER", {
                             channel: channel,
@@ -294,8 +371,8 @@ define([
                     UI.log(Messages.saved);
                 });
             });
-            $div2.append(h('p', addButton));
-            return $div2;
+            $div.append(h('p', addButton));
+            return $div;
         };
 
         redrawAll = function (md) {
@@ -348,49 +425,96 @@ define([
 
         var draw = function () {
             var $d = $('<div>');
-            $('<label>', {'for': 'cp-app-prop-owners'}).text(Messages.creation_owners)
-                .appendTo($d);
-            var owners = Messages.creation_noOwner;
             var priv = common.getMetadataMgr().getPrivateData();
+            var user = common.getMetadataMgr().getUserData();
             var edPublic = priv.edPublic;
             var owned = false;
+            var _owners = {};
             if (data.owners && data.owners.length) {
                 if (data.owners.indexOf(edPublic) !== -1) {
                     owned = true;
+                } else {
+                    Object.keys(priv.teams || {}).some(function (id) {
+                        var team = priv.teams[id] || {};
+                        if (team.viewer) { return; }
+                        if (data.owners.indexOf(team.edPublic) === -1) { return; }
+                        owned = id;
+                        return true;
+                    });
                 }
-                var names = [];
                 var strangers = 0;
                 data.owners.forEach(function (ed) {
                     // If a friend is an owner, add their name to the list
                     // otherwise, increment the list of strangers
+
+                    // Our edPublic? print "Yourself"
                     if (ed === edPublic) {
-                        names.push(Messages.yourself);
+                        _owners[ed] = {
+                            selected: true,
+                            name: user.name,
+                            avatar: user.avatar
+                        };
                         return;
                     }
-                    if (!Object.keys(priv.friends || {}).some(function (c) {
-                        var friend = priv.friends[c] || {};
-                        if (friend.edPublic !== ed || c === 'me') { return; }
-                        names.push(friend.displayName);
+                    // One of our teams? print the team name
+                    if (Object.keys(priv.teams || {}).some(function (id) {
+                        var team = priv.teams[id] || {};
+                        if (team.edPublic !== ed) { return; }
+                        _owners[ed] = {
+                            name: team.name,
+                            avatar: team.avatar
+                        };
                         return true;
                     })) {
-                        strangers++;
+                        return;
                     }
+                    // One of our friends? print the friend name
+                    if (Object.keys(priv.friends || {}).some(function (c) {
+                        var friend = priv.friends[c] || {};
+                        if (friend.edPublic !== ed || c === 'me') { return; }
+                        _owners[friend.edPublic] = {
+                            name: friend.displayName,
+                            avatar: friend.avatar
+                        };
+                        return true;
+                    })) {
+                        return;
+                    }
+                    // Otherwise it's a stranger
+                    strangers++;
                 });
                 if (strangers) {
-                    names.push(Messages._getKey('properties_unknownUser', [strangers]));
+                    _owners['stangers'] = {
+                        name: Messages._getKey('properties_unknownUser', [strangers]),
+                    };
                 }
-                owners = names.join(', ');
             }
-            $d.append(UI.dialog.selectable(owners, {
-                id: 'cp-app-prop-owners',
-            }));
+            var _ownersGrid = UIElements.getUserGrid(Messages.creation_owners, {
+                common: common,
+                noSelect: true,
+                data: _owners,
+                large: true
+            }, function () {});
+            if (_ownersGrid && Object.keys(_owners).length) {
+                $d.append(_ownersGrid.div);
+            } else {
+                $d.append([
+                    h('label', Messages.creation_owners),
+                ]);
+                $d.append(UI.dialog.selectable(Messages.creation_noOwner, {
+                    id: 'cp-app-prop-owners',
+                }));
+
+            }
+
             var parsed;
             if (data.href || data.roHref) {
                 parsed = Hash.parsePadUrl(data.href || data.roHref);
             }
-            if (owned && data.roHref && parsed.type !== 'drive' && parsed.hashData.type === 'pad') {
+            if (owned && parsed.hashData.type === 'pad') {
                 var manageOwners = h('button.no-margin', Messages.owner_openModalButton);
                 $(manageOwners).click(function () {
+                    data.teamId = typeof(owned) !== "boolean" ? owned : undefined;
                     var modal = createOwnerModal(common, data);
                     UI.openCustomModal(modal, {
                         wide: true,
@@ -427,13 +551,17 @@ define([
                     $d.append(password);
                 }
 
-                if (!data.noEditPassword && owned && parsed.hashData.type === 'pad' && parsed.type !== "sheet") { // FIXME SHEET fix password change for sheets
+                if (!data.noEditPassword && owned && parsed.type !== "sheet") { // FIXME SHEET fix password change for sheets
                     var sframeChan = common.getSframeChannel();
+
+                    var isFile = parsed.hashData.type === 'file';
+                    var isSharedFolder = parsed.type === 'drive';
+
                     var changePwTitle = Messages.properties_changePassword;
-                    var changePwConfirm = Messages.properties_confirmChange;
+                    var changePwConfirm = isFile ? Messages.properties_confirmChangeFile : Messages.properties_confirmChange;
                     if (!hasPassword) {
                         changePwTitle = Messages.properties_addPassword;
-                        changePwConfirm = Messages.properties_confirmNew;
+                        changePwConfirm = isFile ? Messages.properties_confirmNewFile : Messages.properties_confirmNew;
                     }
                     $('<label>', {'for': 'cp-app-prop-change-password'})
                         .text(changePwTitle).appendTo($d);
@@ -446,22 +574,58 @@ define([
                         newPassword,
                         passwordOk
                     ]);
+                    var pLocked = false;
                     $(passwordOk).click(function () {
                         var newPass = $(newPassword).find('input').val();
                         if (data.password === newPass ||
                             (!data.password && !newPass)) {
                             return void UI.alert(Messages.properties_passwordSame);
                         }
+                        if (pLocked) { return; }
+                        pLocked = true;
                         UI.confirm(changePwConfirm, function (yes) {
-                            if (!yes) { return; }
-                            sframeChan.query("Q_PAD_PASSWORD_CHANGE", {
+                            if (!yes) { pLocked = false; return; }
+                            $(passwordOk).html('').append(h('span.fa.fa-spinner.fa-spin', {style: 'margin-left: 0'}));
+                            var q = isFile ? 'Q_BLOB_PASSWORD_CHANGE' : 'Q_PAD_PASSWORD_CHANGE';
+
+                            // If this is a file password change, register to the upload events:
+                            // * if there is a pending upload, ask if we shoudl interrupt
+                            // * display upload progress
+                            var onPending;
+                            var onProgress;
+                            if (isFile) {
+                                onPending = sframeChan.on('Q_BLOB_PASSWORD_CHANGE_PENDING', function (data, cb) {
+                                    onPending.stop();
+                                    UI.confirm(Messages.upload_uploadPending, function (yes) {
+                                        cb({cancel: yes});
+                                    });
+                                });
+                                onProgress = sframeChan.on('EV_BLOB_PASSWORD_CHANGE_PROGRESS', function (data) {
+                                    if (typeof (data) !== "number") { return; }
+                                    var p = Math.round(data);
+                                    $(passwordOk).text(p + '%');
+                                });
+                            }
+
+                            sframeChan.query(q, {
+                                teamId: typeof(owned) !== "boolean" ? owned : undefined,
                                 href: data.href || data.roHref,
                                 password: newPass
                             }, function (err, data) {
+                                $(passwordOk).text(Messages.properties_changePasswordButton);
+                                pLocked = false;
                                 if (err || data.error) {
+                                    console.error(err || data.error);
                                     return void UI.alert(Messages.properties_passwordError);
                                 }
                                 UI.findOKButton().click();
+                                if (isFile) {
+                                    onProgress.stop();
+                                    $(passwordOk).text(Messages.properties_changePasswordButton);
+                                    var alertMsg = data.warning ? Messages.properties_passwordWarningFile
+                                                                : Messages.properties_passwordSuccessFile;
+                                    return void UI.alert(alertMsg, undefined, {force: true});
+                                }
                                 // If we didn't have a password, we have to add the /p/
                                 // If we had a password and we changed it to a new one, we just have to reload
                                 // If we had a password and we removed it, we have to remove the /p/
@@ -471,7 +635,9 @@ define([
                                     }, {force: true});
                                 }
                                 return void UI.alert(Messages.properties_passwordSuccess, function () {
-                                    common.gotoURL(hasPassword && newPass ? undefined : (data.href || data.roHref));
+                                    if (!isSharedFolder) {
+                                        common.gotoURL(hasPassword && newPass ? undefined : (data.href || data.roHref));
+                                    }
                                 }, {force: true});
                             });
                         });
@@ -501,7 +667,7 @@ define([
     };
     var getPadProperties = function (common, data, cb) {
         var $d = $('<div>');
-        if (!data || (!data.href && !data.roHref)) { return void cb(void 0, $d); }
+        if (!data) { return void cb(void 0, $d); }
 
         if (data.href) {
             $('<label>', {'for': 'cp-app-prop-link'}).text(Messages.editShare).appendTo($d);
@@ -609,20 +775,19 @@ define([
         });
     };
 
-    UIElements.getFriendsList = function (label, config, onSelect) {
+    UIElements.getUserGrid = function (label, config, onSelect) {
         var common = config.common;
-        var friends = config.friends;
-        if (!friends) { return; }
+        var users = config.data;
+        if (!users) { return; }
 
-        var others = Object.keys(friends).map(function (curve, i) {
-            if (curve.length <= 40) { return; }
-            var data = friends[curve];
-            if (!data.notifications) { return; }
-            var name = data.displayName || Messages.anonymous;
-            var avatar = h('span.cp-share-friend-avatar.cp-avatar');
+        var icons = Object.keys(users).map(function (key, i) {
+            var data = users[key];
+            var name = data.displayName || data.name || Messages.anonymous;
+            var avatar = h('span.cp-usergrid-avatar.cp-avatar');
             UIElements.displayAvatar(common, $(avatar), data.avatar, name);
-            return h('div.cp-share-friend', {
+            return h('div.cp-usergrid-user'+(data.selected?'.cp-selected':'')+(config.large?'.large':''), {
                 'data-ed': data.edPublic,
+                'data-teamid': data.teamId,
                 'data-curve': data.curvePublic || '',
                 'data-name': name.toLowerCase(),
                 'data-order': i,
@@ -630,21 +795,21 @@ define([
                 style: 'order:'+i+';'
             },[
                 avatar,
-                h('span.cp-share-friend-name', name)
+                h('span.cp-usergrid-user-name', name)
             ]);
         }).filter(function (x) { return x; });
 
-        var noOthers = others.length === 0 ? '.cp-recent-only' : '';
+        var noOthers = icons.length === 0 ? '.cp-usergrid-empty' : '';
 
-        var buttonSelect = h('button.cp-share-with-friends', Messages.share_selectAll);
-        var buttonDeselect = h('button.cp-share-with-friends', Messages.share_deselectAll);
+        var buttonSelect = h('button', Messages.share_selectAll);
+        var buttonDeselect = h('button', Messages.share_deselectAll);
         var inputFilter = h('input', {
             placeholder: Messages.share_filterFriend
         });
 
-        var div = h('div.cp-share-friends.cp-share-column' + noOthers, [
+        var div = h('div.cp-usergrid-container' + noOthers, [
             h('label', label),
-            h('div.cp-share-grid-filter', config.noFilter ? undefined : [
+            h('div.cp-usergrid-filter', (config.noFilter || config.noSelect) ? undefined : [
                 inputFilter,
                 buttonSelect,
                 buttonDeselect
@@ -652,46 +817,23 @@ define([
         ]);
         var $div = $(div);
 
-        // Fill with fake friends to have a uniform spacing (from the flexbox)
-        var makeFake = function () {
-            return h('div.cp-share-friend.cp-fake-friend', {
-                style: 'order:9999999;'
-            });
-        };
-        var addFake = function (els) {
-            $div.find('.cp-fake-friend').remove();
-            var n = (6 - els.length%6)%6;
-            for (var j = 0; j < n; j++) {
-                els.push(makeFake);
-            }
-        };
-        addFake(others);
-
         // Hide friends when they are filtered using the text input
         var redraw = function () {
             var name = $(inputFilter).val().trim().replace(/"/g, '').toLowerCase();
-            $div.find('.cp-share-friend').show();
+            $div.find('.cp-usergrid-user').show();
             if (name) {
-                $div.find('.cp-share-friend:not(.cp-selected):not([data-name*="'+name+'"])').hide();
-            }
-
-            // Redraw fake friends
-            $div.find('.cp-fake-friend').remove();
-            var visible = $div.find('.cp-share-friend:visible').length;
-            var n = (6 - visible%6)%6;
-            for (var i = 0; i<n; i++) {
-                $div.find('.cp-share-grid').append(makeFake());
+                $div.find('.cp-usergrid-user:not(.cp-selected):not([data-name*="'+name+'"])').hide();
             }
         };
 
         $(inputFilter).on('keydown keyup change', redraw);
 
         $(buttonSelect).click(function () {
-            $div.find('.cp-share-friend:not(.cp-fake-friend):not(.cp-selected):visible').addClass('cp-selected');
+            $div.find('.cp-usergrid-user:not(.cp-selected):visible').addClass('cp-selected');
             onSelect();
         });
         $(buttonDeselect).click(function () {
-            $div.find('.cp-share-friend.cp-selected').removeClass('cp-selected').each(function (i, el) {
+            $div.find('.cp-usergrid-user.cp-selected').removeClass('cp-selected').each(function (i, el) {
                 var order = $(el).attr('data-order');
                 if (!order) { return; }
                 $(el).attr('style', 'order:'+order);
@@ -700,21 +842,23 @@ define([
             onSelect();
         });
 
-        $(div).append(h('div.cp-share-grid', others));
-        $div.on('click', '.cp-share-friend', function () {
-            var sel = $(this).hasClass('cp-selected');
-            if (!sel) {
-                $(this).addClass('cp-selected');
-            } else {
-                var order = $(this).attr('data-order');
-                order = order ? 'order:'+order : '';
-                $(this).removeClass('cp-selected').attr('style', order);
-            }
-            onSelect();
-        });
+        $(div).append(h('div.cp-usergrid-grid', icons));
+        if (!config.noSelect) {
+            $div.on('click', '.cp-usergrid-user', function () {
+                var sel = $(this).hasClass('cp-selected');
+                if (!sel) {
+                    $(this).addClass('cp-selected');
+                } else {
+                    var order = $(this).attr('data-order');
+                    order = order ? 'order:'+order : '';
+                    $(this).removeClass('cp-selected').attr('style', order);
+                }
+                onSelect();
+            });
+        }
 
         return {
-            others: others,
+            icons: icons,
             div: div
         };
     };
@@ -740,7 +884,7 @@ define([
         var refreshButtons = function () {
             var $nav = $div.closest('.alertify').find('nav');
 
-            var friendMode = $div.find('.cp-share-friend.cp-selected').length;
+            var friendMode = $div.find('.cp-usergrid-user.cp-selected').length;
             if (friendMode) {
                 $nav.find('button.cp-share-with-friends').prop('disabled', '');
             } else {
@@ -749,42 +893,51 @@ define([
         };
 
         config.noInclude = true;
-        var friendsList = UIElements.getFriendsList(Messages.share_linkFriends, config, refreshButtons);
+        Object.keys(friends).forEach(function (curve) {
+            var data = friends[curve];
+            if (curve.length > 40 && data.notifications) { return; }
+            delete friends[curve];
+        });
+
+        var friendsList = UIElements.getUserGrid(Messages.share_linkFriends, {
+            common: common,
+            data: friends,
+            noFilter: false
+        }, refreshButtons);
         var friendDiv = friendsList.div;
         $div.append(friendDiv);
-        var others = friendsList.others;
+        var others = friendsList.icons;
 
         var privateData = common.getMetadataMgr().getPrivateData();
         var teamsData = Util.tryParse(JSON.stringify(privateData.teams)) || {};
         var teams = {};
-        if (privateData.enableTeams) {
-            Object.keys(teamsData).forEach(function (id) {
-                // config.teamId only exists when we're trying to share a pad from a team drive
-                // In this case, we don't want to share the pad with the current team
-                if (config.teamId && config.teamId === id) { return; }
-                var t = teamsData[id];
-                teams[t.edPublic] = {
-                    notifications: true,
-                    displayName: t.name,
-                    edPublic: t.edPublic,
-                    avatar: t.avatar,
-                    id: id
-                };
-            });
-            var teamsList = UIElements.getFriendsList('Share with a team', { // XXX
-                common: common,
-                noFilter: true,
-                friends: teams
-            }, refreshButtons);
-            $div.append(teamsList.div);
-        }
+        Object.keys(teamsData).forEach(function (id) {
+            // config.teamId only exists when we're trying to share a pad from a team drive
+            // In this case, we don't want to share the pad with the current team
+            if (config.teamId && config.teamId === id) { return; }
+            if (!teamsData[id].hasSecondaryKey) { return; }
+            var t = teamsData[id];
+            teams[t.edPublic] = {
+                notifications: true,
+                displayName: t.name,
+                edPublic: t.edPublic,
+                avatar: t.avatar,
+                id: id
+            };
+        });
+        var teamsList = UIElements.getUserGrid(Messages.share_linkTeam, {
+            common: common,
+            noFilter: true,
+            data: teams
+        }, refreshButtons);
+        $div.append(teamsList.div);
 
         var shareButtons = [{
             className: 'primary cp-share-with-friends',
             name: Messages.share_withFriends,
             onClick: function () {
                 var href = Hash.getRelativeHref($('#cp-share-link-preview').val());
-                var $friends = $div.find('.cp-share-friend.cp-selected');
+                var $friends = $div.find('.cp-usergrid-user.cp-selected');
                 $friends.each(function (i, el) {
                     var curve = $(el).attr('data-curve');
                     // Check if the selected element is a friend or a team
@@ -859,12 +1012,11 @@ define([
             });
             // Reorder the friend icons
             others.forEach(function (el, i) {
-                if ($(el).is('.cp-fake-friend')) { return; }
                 $(el).attr('data-order', i).css('order', i);
             });
             // Display them
-            $(friendDiv).find('.cp-share-grid').detach();
-            $(friendDiv).append(h('div.cp-share-grid', others));
+            $(friendDiv).find('.cp-usergrid-grid').detach();
+            $(friendDiv).append(h('div.cp-usergrid-grid', others));
             $div.append(UI.dialog.getButtons(shareButtons, config.onClose));
             refreshButtons();
         });
@@ -877,7 +1029,7 @@ define([
         var hashes = config.hashes;
         var common = config.common;
 
-        if (!hashes) { return; }
+        if (!hashes || (!hashes.editHash && !hashes.viewHash)) { return; }
 
         // Share link tab
         var hasFriends = Object.keys(config.friends || {}).length !== 0;
@@ -885,7 +1037,12 @@ define([
         var friendsList = hasFriends ? createShareWithFriends(config, onFriendShare) : undefined;
         var friendsUIClass = hasFriends ? '.cp-share-columns' : '';
 
-        var mainShareColumn = h('div.cp-share-column.contains-nav', [
+        var content = [];
+        var sfContent = [
+            h('label', Messages.sharedFolders_share),
+            h('br'),
+        ];
+        var shareContent = [
             h('label', Messages.share_linkAccess),
             h('br'),
             UI.createRadio('cp-share-editable', 'cp-share-editable-true',
@@ -893,18 +1050,21 @@ define([
             UI.createRadio('cp-share-editable', 'cp-share-editable-false',
                            Messages.share_linkView, false, { mark: {tabindex:1} }),
             h('br'),
+        ];
+        var padContent = [
             h('label', Messages.share_linkOptions),
             h('br'),
             UI.createCheckbox('cp-share-embed', Messages.share_linkEmbed, false, { mark: {tabindex:1} }),
             UI.createCheckbox('cp-share-present', Messages.share_linkPresent, false, { mark: {tabindex:1} }),
             h('br'),
-            UI.dialog.selectable('', { id: 'cp-share-link-preview', tabindex: 1 }),
-        ]);
+        ];
+        if (config.sharedFolder) { Array.prototype.push.apply(content, sfContent); }
+        Array.prototype.push.apply(content, shareContent);
+        if (!config.sharedFolder) { Array.prototype.push.apply(content, padContent); }
+        content.push(UI.dialog.selectable('', { id: 'cp-share-link-preview', tabindex: 1 }));
+
+        var mainShareColumn = h('div.cp-share-column.contains-nav', content);
         var link = h('div.cp-share-modal' + friendsUIClass);
-        if (!hashes.editHash) {
-            $(link).find('#cp-share-editable-false').attr('checked', true);
-            $(link).find('#cp-share-editable-true').removeAttr('checked').attr('disabled', true);
-        }
         var saveValue = function () {
             var edit = Util.isChecked($(link).find('#cp-share-editable-true'));
             var embed = Util.isChecked($(link).find('#cp-share-embed'));
@@ -943,20 +1103,31 @@ define([
                 if (success) { UI.log(Messages.shareSuccess); }
             },
             keys: [13]
-        }, {
-            className: 'primary',
-            name: Messages.share_linkOpen,
-            onClick: function () {
-                saveValue();
-                var v = getLinkValue();
-                window.open(v);
-            },
-            keys: [[13, 'ctrl']]
         }];
+        if (!config.sharedFolder) {
+            shareButtons.push({
+                className: 'primary',
+                name: Messages.share_linkOpen,
+                onClick: function () {
+                    saveValue();
+                    var v = getLinkValue();
+                    window.open(v);
+                },
+                keys: [[13, 'ctrl']]
+            });
+        }
 
         var $link = $(link);
         $(mainShareColumn).append(UI.dialog.getButtons(shareButtons, config.onClose)).appendTo($link);
         $(friendsList).appendTo($link);
+
+        if (!hashes.editHash) {
+            $(link).find('#cp-share-editable-false').attr('checked', true);
+            $(link).find('#cp-share-editable-true').removeAttr('checked').attr('disabled', true);
+        } else if (!hashes.viewHash) {
+            $(link).find('#cp-share-editable-false').removeAttr('checked').attr('disabled', true);
+            $(link).find('#cp-share-editable-true').attr('checked', true);
+        }
 
         $(link).find('#cp-share-link-preview').val(getLinkValue());
         $(link).find('input[type="radio"], input[type="checkbox"]').on('change', function () {
@@ -1019,7 +1190,7 @@ define([
         }
         common.getAttribute(['general', 'share'], function (err, val) {
             val = val || {};
-            if (val.edit === false || !hashes.editHash) {
+            if ((val.edit === false && hashes.viewHash) || !hashes.editHash) {
                 $(link).find('#cp-share-editable-false').prop('checked', true);
                 $(link).find('#cp-share-editable-true').prop('checked', false);
             } else {
@@ -1028,12 +1199,17 @@ define([
             }
             if (val.embed) { $(link).find('#cp-share-embed').prop('checked', true); }
             if (val.present) { $(link).find('#cp-share-present').prop('checked', true); }
+            if (config.sharedFolder) {
+                delete val.embed;
+                delete val.present;
+            }
             $(link).find('#cp-share-link-preview').val(getLinkValue(val));
         });
         common.getMetadataMgr().onChange(function () {
             // "hashes" is only available is the secure "share" app
-            hashes = common.getMetadataMgr().getPrivateData().hashes;
-            if (!hashes) { return; }
+            var _hashes = common.getMetadataMgr().getPrivateData().hashes;
+            if (!_hashes) { return; }
+            hashes = _hashes;
             $(link).find('#cp-share-link-preview').val(getLinkValue());
         });
         return tabs;
@@ -1135,60 +1311,19 @@ define([
         }
         return tabs;
     };
-    UIElements.createSFShareModal = function (config) {
-        var origin = config.origin;
-        var pathname = config.pathname;
-        var hashes = config.hashes;
-
-        if (!hashes.editHash) { throw new Error("You must provide a valid hash"); }
-        var url = origin + pathname + '#' + hashes.editHash;
-
-        // Share link tab
-        var hasFriends = Object.keys(config.friends || {}).length !== 0;
-        var friendsList = hasFriends ? createShareWithFriends(config) : undefined;
-        var friendsUIClass = hasFriends ? '.cp-share-columns' : '';
-        var mainShareColumn = h('div.cp-share-column.contains-nav', [
-            h('div.cp-share-column', [
-                h('label', Messages.sharedFolders_share),
-                h('br'),
-                hasFriends ? h('p', Messages.share_description) : undefined,
-                UI.dialog.selectable(url, { id: 'cp-share-link-preview', tabindex: 1 })
-            ])
-        ]);
-        var link = h('div.cp-share-modal' + friendsUIClass);
-        var linkButtons = [{
-            className: 'cancel',
-            name: Messages.cancel,
-            onClick: function () {},
-            keys: [27]
-        }];
-        var shareButtons = [{
-            className: 'primary',
-            name: Messages.share_linkCopy,
-            onClick: function () {
-                var success = Clipboard.copy(url);
-                if (success) { UI.log(Messages.shareSuccess); }
-            },
-            keys: [13]
-        }];
-        var $link = $(link);
-        $(mainShareColumn).append(UI.dialog.getButtons(shareButtons, config.onClose)).appendTo($link);
-        $(friendsList).appendTo($link);
-        return UI.dialog.customModal(link, {buttons: linkButtons});
-    };
 
     UIElements.createInviteTeamModal = function (config) {
         var common = config.common;
         var hasFriends = Object.keys(config.friends || {}).length !== 0;
 
         if (!hasFriends) {
-            return void UI.alert('No friend to invite'); // XXX
+            return void UI.alert(Messages.team_noFriend);
         }
         var privateData = common.getMetadataMgr().getPrivateData();
         var team = privateData.teams[config.teamId];
         if (!team) { return void UI.warn(Messages.error); }
 
-        var module = config.module || common.makeUniversal('team', { onEvent: function () {} });
+        var module = config.module || common.makeUniversal('team');
 
         var $div;
         var refreshButton = function () {
@@ -1196,16 +1331,16 @@ define([
             var $modal = $div.closest('.alertify');
             var $nav = $modal.find('nav');
             var $btn = $nav.find('button.primary');
-            var selected = $div.find('.cp-share-friend.cp-selected').length;
+            var selected = $div.find('.cp-usergrid-user.cp-selected').length;
             if (selected) {
                 $btn.prop('disabled', '');
             } else {
                 $btn.prop('disabled', 'disabled');
             }
         };
-        var list = UIElements.getFriendsList('Pick the friends you want to invite to the team', { // XXX
+        var list = UIElements.getUserGrid(Messages.team_pickFriends, {
             common: common,
-            friends: config.friends,
+            data: config.friends,
         }, refreshButton);
         $div = $(list.div);
         refreshButton();
@@ -1217,9 +1352,9 @@ define([
             keys: [27]
         }, {
             className: 'primary',
-            name: 'INVITE', // XXX
+            name: Messages.team_inviteModalButton,
             onClick: function () {
-                var $sel = $div.find('.cp-share-friend.cp-selected');
+                var $sel = $div.find('.cp-usergrid-user.cp-selected');
                 var sel = $sel.toArray();
                 if (!sel.length) { return; }
 
@@ -1240,7 +1375,6 @@ define([
         }];
 
         var content = h('div', [
-            h('h4', 'Invite friends to your team: '+ team.name),
             list.div
         ]);
 
@@ -1427,8 +1561,12 @@ define([
                             }
                             UI.confirm(msg, function (yes) {
                                 if (!yes) { return; }
-                                sframeChan.query('Q_MOVE_TO_TRASH', null, function (err) {
-                                    if (err) { return void callback(err); }
+                                sframeChan.query('Q_MOVE_TO_TRASH', null, function (err, obj) {
+                                    err = err || (obj && obj.error);
+                                    if (err) {
+                                        callback(err);
+                                        return void UI.warn(Messages.fm_forbidden);
+                                    }
                                     var cMsg = common.isLoggedIn() ? Messages.movedToTrash : Messages.deleted;
                                     var msg = common.fixLinks($('<div>').html(cMsg));
                                     UI.alert(msg);
@@ -1975,10 +2113,7 @@ define([
             var cryptKey = Hash.encodeBase64(secret.keys && secret.keys.cryptKey);
             var src = origin + Hash.getBlobPathFromHex(hexFileName);
             common.getFileSize(hexFileName, function (e, data) {
-                if (e || !data) {
-                    displayDefault();
-                    return void console.error(e || "404 avatar");
-                }
+                if (e || !data) { return void displayDefault(); }
                 if (typeof data !== "number") { return void displayDefault(); }
                 if (Util.bytesToMegabytes(data) > 0.5) { return void displayDefault(); }
                 var $img = $('<media-tag>').appendTo($container);
@@ -2102,15 +2237,16 @@ define([
             var $limit = $('<span>', {'class': 'cp-limit-bar'}).appendTo($container);
             var quota = usage/limit;
             var $usage = $('<span>', {'class': 'cp-limit-usage'}).css('width', quota*100+'%');
+            var $buttons = $(h('span.cp-limit-buttons')).appendTo($container);
 
             var urls = common.getMetadataMgr().getPrivateData().accounts;
             var makeDonateButton = function () {
                 var $a = $('<a>', {
-                    'class': 'cp-limit-upgrade btn btn-success',
+                    'class': 'cp-limit-upgrade btn btn-primary',
                     href: urls.donateURL,
                     rel: "noreferrer noopener",
                     target: "_blank",
-                }).text(Messages.supportCryptpad).appendTo($container);
+                }).text(Messages.crowdfunding_button2).appendTo($buttons);
                 $a.click(function () {
                     Feedback.send('SUPPORT_CRYPTPAD');
                 });
@@ -2122,7 +2258,7 @@ define([
                     href: urls.upgradeURL,
                     rel: "noreferrer noopener",
                     target: "_blank",
-                }).text(Messages.upgradeAccount).appendTo($container);
+                }).text(Messages.upgradeAccount).appendTo($buttons);
                 $a.click(function () {
                     Feedback.send('UPGRADE_ACCOUNT');
                 });
@@ -2135,6 +2271,7 @@ define([
                 } else if (!plan) {
                     // user is logged in and subscriptions are allowed
                     // and they don't have one. show upgrades
+                    makeDonateButton();
                     makeUpgradeButton();
                 } else {
                     // they have a plan. show nothing
@@ -2151,13 +2288,14 @@ define([
                 prettyUsage = Messages._getKey('formattedMB', [usage]);
                 prettyLimit = Messages._getKey('formattedMB', [limit]);
             }
-
+            
             if (quota < 0.8) { $usage.addClass('cp-limit-usage-normal'); }
             else if (quota < 1) { $usage.addClass('cp-limit-usage-warning'); }
             else { $usage.addClass('cp-limit-usage-above'); }
             var $text = $('<span>', {'class': 'cp-limit-usage-text'});
-            $text.text(usage + ' / ' + prettyLimit);
-            $limit.append($usage).append($text);
+            $text.html(Messages._getKey('storageStatus', [prettyUsage, prettyLimit]));
+            $container.prepend($text);
+            $limit.append($usage);
         };
 
         var updateUsage = Util.notAgainForAnother(function () {
@@ -2392,7 +2530,18 @@ define([
                     'href': origin+'/drive/',
                     'class': 'fa fa-hdd-o'
                 },
-                content: h('span', Messages.login_accessDrive)
+                content: h('span', Messages.type.drive)
+            });
+        }
+        if (padType !== 'teams' && accountName) {
+            options.push({
+                tag: 'a',
+                attributes: {
+                    'target': '_blank',
+                    'href': origin+'/teams/',
+                    'class': 'fa fa-users'
+                },
+                content: h('span', Messages.type.teams)
             });
         }
         options.push({ tag: 'hr' });
@@ -2434,15 +2583,42 @@ define([
                 content: h('span', Messages.supportPage || 'Support')
             });
         }
-        options.push({
-            tag: 'a',
-            attributes: {
-                'target': '_blank',
-                'href': origin+'/features.html',
-                'class': 'fa fa-star-o'
-            },
-            content: h('span', priv.plan ? Messages.settings_cat_subscription : Messages.pricing)
-        });
+        options.push({ tag: 'hr' });
+        if (Config.allowSubscriptions) {
+            options.push({
+                tag: 'a',
+                attributes: {
+                    'target': '_blank',
+                    'href': priv.plan ? priv.accounts.upgradeURL : origin+'/features.html',
+                    'class': 'fa fa-star-o'
+                },
+                content: h('span', priv.plan ? Messages.settings_cat_subscription : Messages.pricing)
+            });
+        }
+        if (!priv.plan && !Config.removeDonateButton) {
+            options.push({
+                tag: 'a',
+                attributes: {
+                    'target': '_blank',
+                    'rel': 'noopener',
+                    'href': priv.accounts.donateURL,
+                    'class': 'fa fa-gift'
+                },
+                content: h('span', Messages.crowdfunding_button2)
+            });
+        }
+        if (AppConfig.surveyURL) {
+            options.push({
+                tag: 'a',
+                attributes: {
+                    'target': '_blank',
+                    'rel': 'noopener',
+                    'href': AppConfig.surveyURL,
+                    'class': 'cp-toolbar-survey fa fa-graduation-cap'
+                },
+                content: h('span', Messages.survey)
+            });
+        }
         options.push({ tag: 'hr' });
         // Add login or logout button depending on the current status
         if (accountName) {
@@ -2553,6 +2729,9 @@ define([
                 window.parent.location = origin+'/admin/';
             }
         });
+        $userAdmin.find('a.cp-toolbar-survey').click(function () {
+            Feedback.send('SURVEY_CLICKED');
+        });
         $userAdmin.find('a.cp-toolbar-menu-profile').click(function () {
             if (padType) {
                 window.open(origin+'/profile/');
@@ -2645,7 +2824,9 @@ define([
 
     UIElements.createNewPadModal = function (common) {
         // if in drive, show new pad modal instead
-        if ($("body.cp-app-drive").length !== 0) { return void $(".cp-app-drive-element-row.cp-app-drive-new-ghost").click(); }
+        if ($(".cp-app-drive-element-row.cp-app-drive-new-ghost").length !== 0) {
+            return void $(".cp-app-drive-element-row.cp-app-drive-new-ghost").click();
+        }
 
         var $modal = UIElements.createModal({
             id: 'cp-app-toolbar-creation-dialog',
@@ -2674,7 +2855,7 @@ define([
         var i = 0;
         var types = AppConfig.availablePadTypes.filter(function (p) {
             if (p === 'drive') { return; }
-            if (p === 'team') { return; }
+            if (p === 'teams') { return; }
             if (p === 'contacts') { return; }
             if (p === 'todo') { return; }
             if (p === 'file') { return; }
@@ -2881,57 +3062,49 @@ define([
         // Team pad
         var team;
         var teamExists = privateData.teams && Object.keys(privateData.teams).length;
-        var $teamBlock;
+        var teamValue;
         // storeInTeam can be
         // * a team ID ==> store in the team drive, and the team will be the owner
         // * -1 ==> store in the user drive, and the user will be the owner
         // * undefined ==> ask
-        if (teamExists && privateData.enableTeams) {
-            var teamOptions = Object.keys(privateData.teams).map(function (teamId) {
-                var t = privateData.teams[teamId];
-                return {
-                    tag: 'a',
-                    attributes: {
-                        'data-value': teamId,
-                        'href': '#'
-                    },
-                    content: 'TEAM: <b>' + t.name + '</b>' // XXX
-                };
+        if (teamExists) {
+            var teams = Object.keys(privateData.teams).map(function (id) {
+                var data = privateData.teams[id];
+                var avatar = h('span.cp-creation-team-avatar.cp-avatar');
+                UIElements.displayAvatar(common, $(avatar), data.avatar, data.name);
+                return h('div.cp-creation-team', {
+                    'data-id': id,
+                    title: data.name,
+                },[
+                    avatar,
+                    h('span.cp-creation-team-name', data.name)
+                ]);
             });
-            teamOptions.unshift({
-                tag: 'a',
-                attributes: {
-                    'data-value': '-1',
-                    'href': '#'
-                },
-                content: Messages.settings_cat_drive
-            });
-            teamOptions.unshift({
-                tag: 'a',
-                attributes: {
-                    'data-value': '',
-                    'href': '#'
-                },
-                content: '&nbsp;'
-            });
-            var teamDropdownConfig = {
-                text: "&nbsp;", // Button initial text
-                options: teamOptions, // Entries displayed in the menu
-                isSelect: true,
-                common: common
-            };
-            $teamBlock = UIElements.createDropdown(teamDropdownConfig);
-            $teamBlock.find('a').click(function () {
-                var id = $(this).attr('data-value');
-                $teamBlock.setValue(id);
-            });
-            team = h('div.cp-creation-team', [
-                'Store in', // XXX
-                $teamBlock[0],
-                createHelper('#', "The pad will be stored in your team's drive. If this is an owned pad, it will be owned by the team.") // XXX
+            teams.unshift(h('div.cp-creation-team', {
+                'data-id': '-1',
+                title: Messages.settings_cat_drive
+            }, [
+                h('span.cp-creation-team-avatar.fa.fa-hdd-o'),
+                h('span.cp-creation-team-name', Messages.settings_cat_drive)
+            ]));
+            team = h('div.cp-creation-teams', [
+                Messages.team_pcsSelectLabel,
+                h('div.cp-creation-teams-grid', teams),
+                createHelper('#', Messages.team_pcsSelectHelp)
             ]);
+            var $team = $(team);
+            $team.find('.cp-creation-team').click(function () {
+                if ($(this).hasClass('cp-selected')) {
+                    teamValue = undefined;
+                    return void $(this).removeClass('cp-selected');
+                }
+                $team.find('.cp-creation-team').removeClass('cp-selected');
+                $(this).addClass('cp-selected');
+                teamValue = $(this).attr('data-id');
+            });
             if (privateData.storeInTeam) {
-                $teamBlock.setValue(privateData.storeInTeam);
+                $team.find('[data-id="'+privateData.storeInTeam+'"]').addClass('cp-selected');
+                teamValue = privateData.storeInTeam;
             }
         }
 
@@ -3208,9 +3381,9 @@ define([
             var templateId = $template.data('id') || undefined;
             // Team
             var team;
-            if ($teamBlock && $teamBlock.getValue()) {
-                team = privateData.teams[$teamBlock.getValue()] || {};
-                team.id = Number($teamBlock.getValue());
+            if (teamValue) {
+                team = privateData.teams[teamValue] || {};
+                team.id = Number(teamValue);
             }
 
             return {
@@ -3334,37 +3507,40 @@ define([
         setTimeout(function () {
             common.getAttribute(['general', 'crowdfunding'], function (err, val) {
                 if (err || val === false) { return; }
-                // Display the popup
-                var text = Messages.crowdfunding_popup_text;
-                var yes = h('button.cp-corner-primary', Messages.crowdfunding_popup_yes);
-                var no = h('button.cp-corner-primary', Messages.crowdfunding_popup_no);
-                var never = h('button.cp-corner-cancel', Messages.crowdfunding_popup_never);
-                var actions = h('div', [yes, no, never]);
+                common.getSframeChannel().query('Q_GET_PINNED_USAGE', null, function (err, obj) {
+                    var quotaMb = obj.quota / (1024 * 1024);
+                    if (quotaMb < 10) { return; }
+                    // Display the popup
+                    var text = Messages.crowdfunding_popup_text;
+                    var yes = h('button.cp-corner-primary', Messages.crowdfunding_popup_yes);
+                    var no = h('button.cp-corner-primary', Messages.crowdfunding_popup_no);
+                    var never = h('button.cp-corner-cancel', Messages.crowdfunding_popup_never);
+                    var actions = h('div', [yes, no, never]);
 
-                var modal = UI.cornerPopup(text, actions, null, {big: true});
+                    var modal = UI.cornerPopup(text, actions, null, {big: true});
 
-                $(yes).click(function () {
-                    modal.delete();
-                    common.openURL('https://opencollective.com/cryptpad/contribute');
-                    Feedback.send('CROWDFUNDING_YES');
+                    $(yes).click(function () {
+                        modal.delete();
+                        common.openURL(priv.accounts.donateURL);
+                        Feedback.send('CROWDFUNDING_YES');
+                    });
+                    $(modal.popup).find('a').click(function (e) {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        modal.delete();
+                        common.openURL(priv.accounts.donateURL);
+                        Feedback.send('CROWDFUNDING_LINK');
+                    });
+                    $(no).click(function () {
+                        modal.delete();
+                        Feedback.send('CROWDFUNDING_NO');
+                    });
+                    $(never).click(function () {
+                        modal.delete();
+                        common.setAttribute(['general', 'crowdfunding'], false);
+                        Feedback.send('CROWDFUNDING_NEVER');
+                    });
                 });
-                $(modal.popup).find('a').click(function (e) {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    modal.delete();
-                    common.openURL('https://opencollective.com/cryptpad/');
-                    Feedback.send('CROWDFUNDING_LINK');
-                });
-                $(no).click(function () {
-                    modal.delete();
-                    Feedback.send('CROWDFUNDING_NO');
-                });
-                $(never).click(function () {
-                    modal.delete();
-                    common.setAttribute(['general', 'crowdfunding'], false);
-                    Feedback.send('CROWDFUNDING_NEVER');
-                });
-
             });
         }, 5000);
     };
@@ -3415,6 +3591,7 @@ define([
                     }
                     return void UI.warn(Messages.autostore_error);
                 }
+                $(document).trigger('cpPadStored');
                 delete autoStoreModal[priv.channel];
                 modal.delete();
                 UIElements.displayCrowdfunding(common);
@@ -3688,6 +3865,129 @@ define([
 
         UI.proposal(div, todo);
     };
+    UIElements.displayAddTeamOwnerModal = function (common, data) {
+        var priv = common.getMetadataMgr().getPrivateData();
+        var user = common.getMetadataMgr().getUserData();
+        var sframeChan = common.getSframeChannel();
+        var msg = data.content.msg;
+
+        var name = Util.fixHTML(msg.content.user.displayName) || Messages.anonymous;
+        var title = Util.fixHTML(msg.content.title);
+
+        var text = Messages._getKey('owner_team_add', [name, title]);
+
+        var div = h('div', [
+            UI.setHTML(h('p'), text),
+        ]);
+
+        var answer = function (yes) {
+            common.mailbox.sendTo("ADD_OWNER_ANSWER", {
+                teamChannel: msg.content.teamChannel,
+                title: msg.content.title,
+                answer: yes,
+                user: {
+                    displayName: user.name,
+                    avatar: user.avatar,
+                    profile: user.profile,
+                    notifications: user.notifications,
+                    curvePublic: user.curvePublic,
+                    edPublic: priv.edPublic
+                }
+            }, {
+                channel: msg.content.user.notifications,
+                curvePublic: msg.content.user.curvePublic
+            });
+            common.mailbox.dismiss(data, function (err) {
+                if (err) { console.log(err); }
+            });
+        };
+        var module = common.makeUniversal('team');
+
+        var addOwner = function (chan, waitFor, cb) {
+            // Remove yourself from the pending owners
+            sframeChan.query('Q_SET_PAD_METADATA', {
+                channel: chan,
+                command: 'ADD_OWNERS',
+                value: [priv.edPublic]
+            }, function (err, res) {
+                err = err || (res && res.error);
+                if (!err) { return; }
+                waitFor.abort();
+                cb(err);
+            });
+        };
+        var removePending = function (chan, waitFor, cb) {
+            // Remove yourself from the pending owners
+            sframeChan.query('Q_SET_PAD_METADATA', {
+                channel: chan,
+                command: 'RM_PENDING_OWNERS',
+                value: [priv.edPublic]
+            }, waitFor(function (err, res) {
+                err = err || (res && res.error);
+                if (!err) { return; }
+                waitFor.abort();
+                cb(err);
+            }));
+        };
+        var changeAll = function (add, _cb) {
+            var f = add ? addOwner : removePending;
+            var cb = Util.once(_cb);
+            NThen(function (waitFor) {
+                f(msg.content.teamChannel, waitFor, cb);
+                f(msg.content.chatChannel, waitFor, cb);
+                f(msg.content.rosterChannel, waitFor, cb);
+            }).nThen(function () { cb(); });
+        };
+
+        var todo = function (yes) {
+            if (yes) {
+                // ACCEPT
+                changeAll(true, function (err) {
+                    if (err) {
+                        console.error(err);
+                        var text = err === "INSUFFICIENT_PERMISSIONS" ? Messages.fm_forbidden
+                                                                      : Messages.error;
+                        return void UI.warn(text);
+                    }
+                    UI.log(Messages.saved);
+
+                    // Send notification to the sender
+                    answer(true);
+
+                    // Mark ourselves as "owner" in our local team data
+                    module.execCommand("ANSWER_OWNERSHIP", {
+                        teamChannel: msg.content.teamChannel,
+                        answer: true
+                    }, function (obj) {
+                        if (obj && obj.error) { console.error(obj.error); }
+                    });
+
+                    // Remove yourself from the pending owners
+                    changeAll(false, function (err) {
+                        if (err) { console.error(err); }
+                    });
+                });
+                return;
+            }
+
+            // DECLINE
+            // Remove yourself from the pending owners
+            changeAll(false, function (err) {
+                if (err) { console.error(err); }
+                // Send notification to the sender
+                answer(false);
+                // Set our role back to ADMIN
+                module.execCommand("ANSWER_OWNERSHIP", {
+                    teamChannel: msg.content.teamChannel,
+                    answer: false
+                }, function (obj) {
+                    if (obj && obj.error) { console.error(obj.error); }
+                });
+            });
+        };
+
+        UI.proposal(div, todo);
+    };
 
     UIElements.getVerifiedFriend = function (common, curve, name) {
         var priv = common.getMetadataMgr().getPrivateData();
@@ -3717,8 +4017,7 @@ define([
 
         var verified = UIElements.getVerifiedFriend(common, msg.author, name);
 
-        //var text = Messages._getKey('', [name, title]); // XXX
-        var text = name + " has invited you to join the team <b>" + teamName +"</b>";
+        var text = Messages._getKey('team_invitedToTeam', [name, teamName]);
 
         var div = h('div', [
             UI.setHTML(h('p'), text),
@@ -3747,14 +4046,28 @@ define([
                 console.log(err);
             });
         };
+
+        var MAX_TEAMS_SLOTS = Constants.MAX_TEAMS_SLOTS;
         var todo = function (yes) {
+            var priv = common.getMetadataMgr().getPrivateData();
+            var numberOfTeams = Object.keys(priv.teams || {}).length;
             if (yes) {
+                if (numberOfTeams >= MAX_TEAMS_SLOTS) {
+                    return void UI.alert(Messages._getKey('team_maxTeams', [MAX_TEAMS_SLOTS]));
+                }
                 // ACCEPT
                 module.execCommand('JOIN_TEAM', {
                     team: msg.content.team
                 }, function (obj) {
-                    if (obj && obj.error) { return void UI.warn(Messages.error); }
+                    if (obj && obj.error) {
+                        if (obj.error === 'ENOENT') {
+                            common.mailbox.dismiss(data, function () {});
+                            return void UI.alert(Messages.deletedError);
+                        }
+                        return void UI.warn(Messages.error);
+                    }
                     answer(true);
+                    if (priv.app !== 'teams') { common.openURL('/teams/'); }
                 });
                 return;
             }

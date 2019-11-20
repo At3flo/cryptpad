@@ -1,7 +1,7 @@
 /*@flow*/
 /*jshint esversion: 6 */
 /*  Use Nacl for checking signatures of messages */
-var Nacl = require("tweetnacl");
+var Nacl = require("tweetnacl/nacl-fast");
 
 /* globals Buffer*/
 /* globals process */
@@ -857,6 +857,7 @@ var removeOwnedChannel = function (Env, channelId, unsafeKey, cb) {
                     if (err) {
                         return void cb("E_PROOF_REMOVAL");
                     }
+                    cb();
                 });
             }
 
@@ -869,6 +870,7 @@ var removeOwnedChannel = function (Env, channelId, unsafeKey, cb) {
                 if (err) {
                     return void cb("E_PROOF_REMOVAL");
                 }
+                cb();
             });
         });
     }

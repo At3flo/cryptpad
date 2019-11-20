@@ -6,6 +6,7 @@ define([
     '/common/common-messaging.js',
     '/common/common-constants.js',
     '/common/common-feedback.js',
+    '/common/userObject.js',
     '/common/outer/local-store.js',
     '/common/outer/worker-channel.js',
     '/common/outer/login-block.js',
@@ -13,7 +14,7 @@ define([
     '/customize/application_config.js',
     '/bower_components/nthen/index.js',
 ], function (Config, Messages, Util, Hash,
-            Messaging, Constants, Feedback, LocalStore, Channel, Block,
+            Messaging, Constants, Feedback, UserObject, LocalStore, Channel, Block,
             AppConfig, Nthen) {
 
 /*  This file exposes functionality which is specific to Cryptpad, but not to
@@ -42,7 +43,8 @@ define([
     var origin = encodeURIComponent(window.location.hostname);
     var common = window.Cryptpad = {
         Messages: Messages,
-        donateURL: 'https://accounts.cryptpad.fr/#/donate?on=' + origin,
+        //donateURL: 'https://accounts.cryptpad.fr/#/donate?on=' + origin,
+        donateURL: "https://opencollective.com/cryptpad/",
         upgradeURL: 'https://accounts.cryptpad.fr/#/?on=' + origin,
         account: {},
     };
@@ -157,11 +159,12 @@ define([
         });
     };
     common.addSharedFolder = function (teamId, secret, cb) {
+        var href = (secret.keys && secret.keys.editKeyStr) ? '/drive/#' + Hash.getEditHashFromKeys(secret) : undefined;
         postMessage("ADD_SHARED_FOLDER", {
             teamId: teamId,
             path: ['root'],
             folderData: {
-                href: '/drive/#' + Hash.getEditHashFromKeys(secret),
+                href: href,
                 roHref: '/drive/#' + Hash.getViewHashFromKeys(secret),
                 channel: secret.channel,
                 password: secret.password,
@@ -209,15 +212,23 @@ define([
 
 
     // RPC
-    common.pinPads = function (pads, cb) {
-        postMessage("PIN_PADS", pads, function (obj) {
+    common.pinPads = function (pads, cb, teamId) {
+        var data = {
+            teamId: teamId,
+            pads: pads
+        };
+        postMessage("PIN_PADS", data, function (obj) {
             if (obj && obj.error) { return void cb(obj.error); }
             cb(null, obj.hash);
         });
     };
 
-    common.unpinPads = function (pads, cb) {
-        postMessage("UNPIN_PADS", pads, function (obj) {
+    common.unpinPads = function (pads, cb, teamId) {
+        var data = {
+            teamId: teamId,
+            pads: pads
+        };
+        postMessage("UNPIN_PADS", data, function (obj) {
             if (obj && obj.error) { return void cb(obj.error); }
             cb(null, obj.hash);
         });
@@ -363,7 +374,8 @@ define([
 
 
     common.getMetadata = function (cb) {
-        postMessage("GET_METADATA", null, function (obj) {
+        var parsed = Hash.parsePadUrl(window.location.href);
+        postMessage("GET_METADATA", parsed && parsed.type, function (obj) {
             if (obj && obj.error) { return void cb(obj.error); }
             cb(null, obj);
         });
@@ -830,8 +842,10 @@ define([
         postMessage('GET_PAD_METADATA', data, cb);
     };
 
-    // XXX Teams: change the password of a pad owned by the team
-    common.changePadPassword = function (Crypt, Crypto, href, newPassword, edPublic, cb) {
+    common.changePadPassword = function (Crypt, Crypto, data, cb) {
+        var href = data.href;
+        var newPassword = data.password;
+        var teamId = data.teamId;
         if (!href) { return void cb({ error: 'EINVAL_HREF' }); }
         var parsed = Hash.parsePadUrl(href);
         if (!parsed.hash) { return void cb({ error: 'EINVAL_HREF' }); }
@@ -842,6 +856,7 @@ define([
         var oldSecret;
         var oldMetadata;
         var newSecret;
+        var privateData;
 
         if (parsed.hashData.version >= 2) {
             newSecret = Hash.getSecrets(parsed.type, parsed.hash, newPassword);
@@ -855,12 +870,16 @@ define([
         }
         var newHref = '/' + parsed.type + '/#' + newHash;
 
+        var isSharedFolder = parsed.type === 'drive';
+
         var optsGet = {};
         var optsPut = {
             password: newPassword,
-            metadata: {}
+            metadata: {},
+            initialState: isSharedFolder ? '{}' : undefined
         };
 
+        var cryptgetVal;
 
         Nthen(function (waitFor) {
             if (parsed.hashData && parsed.hashData.password) {
@@ -874,16 +893,26 @@ define([
             common.getPadMetadata({channel: oldChannel}, waitFor(function (metadata) {
                 oldMetadata = metadata;
             }));
+            common.getMetadata(waitFor(function (err, data) {
+                if (err) {
+                    waitFor.abort();
+                    return void cb({ error: err });
+                }
+                privateData = data.priv;
+            }));
         }).nThen(function (waitFor) {
             // Get owners, mailbox and expiration time
-
             var owners = oldMetadata.owners;
-            if (!Array.isArray(owners) || owners.indexOf(edPublic) === -1) {
+            optsPut.metadata.owners = owners;
+
+            // Check if we're allowed to change the password
+            var edPublic = teamId ? (privateData.teams[teamId] || {}).edPublic : privateData.edPublic;
+            var isOwner = Array.isArray(owners) && edPublic && owners.indexOf(edPublic) !== -1;
+            if (!isOwner) {
                 // We're not an owner, we shouldn't be able to change the password!
                 waitFor.abort();
                 return void cb({ error: 'EPERM' });
             }
-            optsPut.metadata.owners = owners;
 
             var mailbox = oldMetadata.mailbox;
             if (mailbox) {
@@ -911,38 +940,46 @@ define([
             }
 
             var expire = oldMetadata.expire;
-            optsPut.metadata.expire = (expire - (+new Date())) / 1000; // Lifetime in seconds
+            if (expire) {
+                optsPut.metadata.expire = (expire - (+new Date())) / 1000; // Lifetime in seconds
+            }
         }).nThen(function (waitFor) {
             Crypt.get(parsed.hash, waitFor(function (err, val) {
                 if (err) {
                     waitFor.abort();
                     return void cb({ error: err });
                 }
-                Crypt.put(newHash, val, waitFor(function (err) {
-                    if (err) {
-                        waitFor.abort();
-                        return void cb({ error: err });
-                    }
-                }), optsPut);
+                cryptgetVal = val;
+                if (isSharedFolder) {
+                    var parsed = JSON.parse(val || '{}');
+                    var oldKey = parsed.version === 2 && oldSecret.keys.secondaryKey;
+                    var newKey = newSecret.keys.secondaryKey;
+                    UserObject.reencrypt(oldKey, newKey, parsed);
+                    cryptgetVal = JSON.stringify(parsed);
+                }
             }), optsGet);
         }).nThen(function (waitFor) {
+            Crypt.put(newHash, cryptgetVal, waitFor(function (err) {
+                if (err) {
+                    waitFor.abort();
+                    return void cb({ error: err });
+                }
+            }), optsPut);
+        }).nThen(function (waitFor) {
+            if (isSharedFolder) {
+                postMessage("UPDATE_SHARED_FOLDER_PASSWORD", {
+                    href: href,
+                    oldChannel: oldChannel,
+                    password: newPassword
+                }, waitFor());
+                return;
+            }
             pad.leavePad({
                 channel: oldChannel
             }, waitFor());
             pad.onDisconnectEvent.fire(true);
         }).nThen(function (waitFor) {
-            common.removeOwnedChannel({
-                channel: oldChannel,
-                teamId: null // TODO
-            }, waitFor(function (obj) {
-                if (obj && obj.error) {
-                    waitFor.abort();
-                    return void cb(obj);
-                }
-            }));
-            common.unpinPads([oldChannel], waitFor());
-            common.pinPads([newSecret.channel], waitFor());
-        }).nThen(function (waitFor) {
+            // Set the new password to our pad data
             common.setPadAttribute('password', newPassword, waitFor(function (err) {
                 if (err) { warning = true; }
             }), href);
@@ -959,12 +996,161 @@ define([
             common.setPadAttribute('href', newHref, waitFor(function (err) {
                 if (err) { warning = true; }
             }), href);
+        }).nThen(function (waitFor) {
+            // delete the old pad
+            common.removeOwnedChannel({
+                channel: oldChannel,
+                teamId: teamId
+            }, waitFor(function (obj) {
+                if (obj && obj.error) {
+                    waitFor.abort();
+                    return void cb(obj);
+                }
+            }));
+            if (!isSharedFolder) {
+                postMessage("CHANGE_PAD_PASSWORD_PIN", {
+                    oldChannel: oldChannel,
+                    channel: newSecret.channel
+                }, waitFor());
+            }
         }).nThen(function () {
             cb({
                 warning: warning,
                 hash: newHash,
                 href: newHref,
                 roHref: newRoHref
+            });
+        });
+    };
+
+    common.changeBlobPassword = function (data, handlers, cb) {
+        var href = data.href;
+        var newPassword = data.password;
+        var teamId = data.teamId;
+        if (!href) { return void cb({ error: 'EINVAL_HREF' }); }
+        var parsed = Hash.parsePadUrl(href);
+        if (!parsed.hash) { return void cb({ error: 'EINVAL_HREF' }); }
+        if (parsed.hashData.type !== 'file') { return void cb({ error: 'EINVAL_TYPE' }); }
+
+        var newSecret;
+        var newHash;
+
+        if (parsed.hashData.version >= 2) {
+            newSecret = Hash.getSecrets(parsed.type, parsed.hash, newPassword);
+            if (!(newSecret.keys && newSecret.keys.fileKeyStr)) {
+                return void cb({error: 'EAUTH'});
+            }
+            newHash = Hash.getFileHashFromKeys(newSecret);
+        } else {
+            newHash = Hash.createRandomHash(parsed.type, newPassword);
+            newSecret = Hash.getSecrets(parsed.type, newHash, newPassword);
+        }
+        var newHref = '/' + parsed.type + '/#' + newHash;
+        var fileHost = Config.fileHost || window.location.origin || '';
+
+        /*
+            1. get old password
+            2. get owners
+        */
+        var oldPassword;
+        var decrypted;
+        var oldChannel;
+        var warning;
+
+        var FileCrypto;
+        var MediaTag;
+        var Upload;
+        Nthen(function (waitFor) {
+            if (parsed.hashData && parsed.hashData.password) {
+                common.getPadAttribute('password', waitFor(function (err, password) {
+                    oldPassword = password || '';
+                }), href);
+            }
+        }).nThen(function (waitFor) {
+            require([
+                '/file/file-crypto.js',
+                '/common/media-tag.js',
+                '/common/outer/upload.js',
+                '/bower_components/tweetnacl/nacl-fast.min.js'
+            ], waitFor(function (_FileCrypto, _MT, _Upload) {
+                FileCrypto = _FileCrypto;
+                MediaTag = _MT;
+                Upload = _Upload;
+            }));
+        }).nThen(function (waitFor) {
+            var oldSecret = Hash.getSecrets(parsed.type, parsed.hash, oldPassword);
+            oldChannel = oldSecret.channel;
+            var src = fileHost + Hash.getBlobPathFromHex(oldChannel);
+            var key = oldSecret.keys && oldSecret.keys.cryptKey;
+            var cryptKey = window.nacl.util.encodeBase64(key);
+
+            var mt = document.createElement('media-tag');
+            mt.setAttribute('src', src);
+            mt.setAttribute('data-crypto-key', 'cryptpad:'+cryptKey);
+
+            MediaTag(mt).on('complete', waitFor(function (_decrypted) {
+                decrypted = _decrypted;
+            })).on('error', function (err) {
+                waitFor.abort();
+                cb({error: err});
+                console.error(err);
+            });
+        }).nThen(function (waitFor) {
+            var reader = new FileReader();
+            reader.readAsArrayBuffer(decrypted.content);
+            reader.onloadend = waitFor(function() {
+                decrypted.u8 = new Uint8Array(reader.result);
+            });
+        }).nThen(function (waitFor) {
+            var key = newSecret.keys && newSecret.keys.cryptKey;
+
+            var onError = function (err) {
+                waitFor.abort();
+                cb({error: err});
+            };
+            Upload.uploadU8(common, {
+                teamId: teamId,
+                u8: decrypted.u8,
+                metadata: decrypted.metadata,
+                key: key,
+                id: newSecret.channel,
+                owned: true,
+                onError: onError,
+                onPending: handlers.onPending,
+                updateProgress: handlers.updateProgress,
+            }, waitFor());
+        }).nThen(function (waitFor) {
+            // Set the new password to our pad data
+            common.setPadAttribute('password', newPassword, waitFor(function (err) {
+                if (err) { warning = true; }
+            }), href);
+            common.setPadAttribute('channel', newSecret.channel, waitFor(function (err) {
+                if (err) { warning = true; }
+            }), href);
+            if (parsed.hashData.password && newPassword) { return; } // same hash
+            common.setPadAttribute('href', newHref, waitFor(function (err) {
+                if (err) { warning = true; }
+            }), href);
+        }).nThen(function (waitFor) {
+            // delete the old pad
+            common.removeOwnedChannel({
+                channel: oldChannel,
+                teamId: teamId
+            }, waitFor(function (obj) {
+                if (obj && obj.error) {
+                    waitFor.abort();
+                    return void cb(obj);
+                }
+            }));
+            postMessage("CHANGE_PAD_PASSWORD_PIN", {
+                oldChannel: oldChannel,
+                channel: newSecret.channel
+            }, waitFor());
+        }).nThen(function () {
+            cb({
+                warning: warning,
+                hash: newHash,
+                href: newHref,
             });
         });
     };
@@ -995,7 +1181,7 @@ define([
         var Cred, Block, Login;
         Nthen(function (waitFor) {
             require([
-                '/customize/credential.js',
+                '/common/common-credential.js',
                 '/common/outer/login-block.js',
                 '/customize/login.js'
             ], waitFor(function (_Cred, _Block, _Login) {
@@ -1178,6 +1364,11 @@ define([
         if (!parsed.type || !parsed.hashData) { return void cb('E_INVALID_HREF'); }
         hashes = Hash.getHashes(secret);
 
+        // If the current href is an edit one, return the existing hashes
+        var parsedHash = parsed.hashData;
+        if (!parsedHash || parsedHash.mode === 'edit') { return void cb(null, hashes); }
+        if (parsedHash.type !== 'pad') { return void cb(null, hashes); }
+
         if (secret.version === 0) {
             // It means we're using an old hash
             hashes.editHash = window.location.hash.slice(1);
@@ -1190,9 +1381,7 @@ define([
         }
 
         postMessage("GET_STRONGER_HASH", {
-            href: window.location.href,
-            channel: secret.channel,
-            password: secret.password
+            channel: secret.channel
         }, function (hash) {
             if (hash) { hashes.editHash = hash; }
             cb(null, hashes);

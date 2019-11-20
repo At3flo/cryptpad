@@ -29,6 +29,7 @@
     // Logs to show that something has happened
     // These show only once
 
+
     .alertify-logs {
         z-index: 100001; // alertify logs should be in front of alertify modals
         @media print {
@@ -115,7 +116,7 @@
             }*/
         }
 
-        .dialog, .alert {
+        .dialog {
             & > div {
                 background-color: @alertify-dialog-bg;
                 &.half {
@@ -204,6 +205,16 @@
                 }
             }
 
+            ::placeholder { /* Chrome, Firefox, Opera, Safari 10.1+ */
+                color: darken(@alertify-input-fg, 15%);
+                opacity: 1; /* Firefox */
+            }
+            :-ms-input-placeholder { /* Internet Explorer 10-11 */
+                color: darken(@alertify-input-fg, 15%);
+            }
+            ::-ms-input-placeholder { /* Microsoft Edge */
+                color: darken(@alertify-input-fg, 15%);
+            }
             input:not(.form-control), textarea {
                 background-color: @alertify-input-bg;
                 color: @alertify-input-fg;
@@ -447,12 +458,18 @@
                 padding: 0 10px;
                 position: relative;
                 &.contains-nav {
-                    padding-bottom: 50px;
-                }
-                nav {
-                    position: absolute;
-                    bottom: 0;
-                    right: 0;
+                    nav {
+                        position: relative;
+                        bottom: 0;
+                        right: 0;
+                        button {
+                            margin: 0 !important;
+                            &:not(:first-child) {
+                                margin-left: 8px !important;
+                                margin-top: 6px !important;
+                            }
+                        }
+                    }
                 }
                 &:first-child {
                     border-right: 1px solid @alertify-fore;
@@ -466,74 +483,9 @@
         }
     }
     .cp-share-column {
-        .cp-share-grid, .cp-share-list {
-            .avatar_main(40px);
-            display: flex;
-            justify-content: space-between;
-            flex-wrap: wrap;
-        }
-        .cp-share-list {
-            margin-bottom: 15px;
-        }
-        .cp-share-grid {
+        .cp-usergrid-grid {
             max-height: 225px;
             overflow-x: auto;
-        }
-        .cp-recent-only {
-            .cp-share-grid, .cp-share-grid-filter {
-                display: none;
-            }
-        }
-        .cp-share-grid-filter {
-            display: flex;
-            input {
-                flex: 1;
-                min-width: 0;
-                margin-bottom: 0 !important;
-                &::placeholder { /* Chrome, Firefox, Opera, Safari 10.1+ */
-                    color: @colortheme_alertify-primary-text;
-                    opacity: 1; /* Firefox */
-                }
-            }
-            margin-bottom: 15px;
-            &:empty {
-                margin: 0;
-                display: none;
-            }
-        }
-        .cp-share-friend {
-            width: 70px;
-            height: 70px;
-            display: flex;
-            flex-flow: column;
-            justify-content: center;
-            align-items: center;
-            padding: 5px;
-            margin-bottom: 6px;
-            cursor: default;
-            transition: order 0.5s, background-color 0.5s;
-            margin-top: 1px;
-            .tools_unselectable();
-
-            &.cp-selected {
-                background-color: @colortheme_alertify-primary;
-                color: @colortheme_alertify-primary-text;
-                order: -1 !important;
-            }
-            .cp-share-friend-avatar {
-                min-height: 40px;
-            }
-            .cp-share-friend-name {
-                overflow: hidden;
-                white-space: nowrap;
-                text-overflow: ellipsis;
-                width: 100%;
-                text-align: center;
-            }
-            border: 1px solid @colortheme_alertify-primary;
-            &.cp-fake-friend {
-                visibility: hidden;
-            }
         }
     }
 }

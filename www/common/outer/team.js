@@ -9,26 +9,51 @@ define([
     '/common/outer/sharedfolder.js',
     '/common/outer/roster.js',
     '/common/common-messaging.js',
+    '/common/common-feedback.js',
 
     '/bower_components/chainpad-listmap/chainpad-listmap.js',
     '/bower_components/chainpad-crypto/crypto.js',
     '/bower_components/chainpad-netflux/chainpad-netflux.js',
     '/bower_components/chainpad/chainpad.dist.js',
     '/bower_components/nthen/index.js',
+    '/bower_components/saferphore/index.js',
     '/bower_components/tweetnacl/nacl-fast.min.js',
 ], function (Util, Hash, Constants, Realtime,
-             ProxyManager, UserObject, SF, Roster, Messaging,
-             Listmap, Crypto, CpNetflux, ChainPad, nThen) {
+             ProxyManager, UserObject, SF, Roster, Messaging, Feedback,
+             Listmap, Crypto, CpNetflux, ChainPad, nThen, Saferphore) {
     var Team = {};
 
     var Nacl = window.nacl;
 
-    var initializeTeams = function (ctx, cb) {
-        cb();
-    };
-
     var registerChangeEvents = function (ctx, team, proxy, fId) {
         if (!team) { return; }
+        if (!fId) {
+            // Listen for shared folder password change
+            proxy.on('change', ['drive', UserObject.SHARED_FOLDERS], function (o, n, p) {
+                if (p.length > 3 && p[3] === 'password') {
+                    var id = p[2];
+                    var data = proxy.drive[UserObject.SHARED_FOLDERS][id];
+                    var href = team.manager.user.userObject.getHref ?
+                            team.manager.user.userObject.getHref(data) : data.href;
+                    var parsed = Hash.parsePadUrl(href);
+                    var secret = Hash.getSecrets(parsed.type, parsed.hash, o);
+                    // We've received a new password, we should update it locally
+                    // NOTE: this is an async call because new password means new roHref!
+                    // We need to wait for the new roHref in the proxy before calling the handlers
+                    // because a read-only team will use it when connecting to the new channel
+                    setTimeout(function () {
+                        SF.updatePassword(ctx.Store, {
+                            oldChannel: secret.channel,
+                            password: n,
+                            href: href
+                        }, ctx.store.network, function () {
+                            console.log('Shared folder password changed');
+                        });
+                    });
+                    return false;
+                }
+            });
+        }
         proxy.on('change', [], function (o, n, p) {
             if (fId) {
                 // Pin the new pads
@@ -37,7 +62,9 @@ define([
                     // Also pin the onlyoffice channels if they exist
                     if (n.rtChannel) { toPin.push(n.rtChannel); }
                     if (n.lastVersion) { toPin.push(n.lastVersion); }
-                    team.pin(toPin, function (obj) { console.error(obj); });
+                    team.pin(toPin, function (obj) {
+                        if (obj && obj.error) { console.error(obj.error); }
+                    });
                 }
                 // Unpin the deleted pads (deleted <=> changed to undefined)
                 if (p[0] === UserObject.FILES_DATA && typeof(o) === "object" && o.channel && !n) {
@@ -50,7 +77,9 @@ define([
                         // Also unpin the onlyoffice channels if they exist
                         if (o.rtChannel) { toUnpin.push(o.rtChannel); }
                         if (o.lastVersion) { toUnpin.push(o.lastVersion); }
-                        team.unpin(toUnpin, function (obj) { console.error(obj); });
+                        team.unpin(toUnpin, function (obj) {
+                            if (obj && obj.error) { console.error(obj); }
+                        });
                     }
                 }
             }
@@ -68,14 +97,21 @@ define([
                 path: p
             });
         });
+        proxy.on('disconnect', function () {
+            team.offline = true;
+        });
+        proxy.on('reconnect', function (/* info */) {
+            team.offline = false;
+        });
     };
 
     var closeTeam = function (ctx, teamId) {
         var team = ctx.teams[teamId];
         if (!team) { return; }
-        team.listmap.stop();
-        team.roster.stop();
+        try { team.listmap.stop(); } catch (e) {}
+        try { team.roster.stop(); } catch (e) {}
         team.proxy = {};
+        team.stopped = true;
         delete ctx.teams[teamId];
         delete ctx.store.proxy.teams[teamId];
         ctx.emit('LEAVE_TEAM', teamId, team.clients);
@@ -98,18 +134,6 @@ define([
         if (chatChannel) { list.push(chatChannel); }
         if (membersChannel) { list.push(membersChannel); }
         if (mailboxChannel) { list.push(mailboxChannel); }
-
-
-
-        // XXX Add the team mailbox
-        /*
-        if (store.proxy.mailboxes) {
-            var mList = Object.keys(store.proxy.mailboxes).map(function (m) {
-                return store.proxy.mailboxes[m].channel;
-            });
-            list = list.concat(mList);
-        }
-        */
 
         list.sort();
         return list;
@@ -147,8 +171,10 @@ define([
             roster: roster
         };
 
+        // Subscribe to events
         if (cId) { team.clients.push(cId); }
 
+        // Listen for roster changes
         roster.on('change', function () {
             var state = roster.getState();
             var me = Util.find(ctx, ['store', 'proxy', 'curvePublic']);
@@ -165,16 +191,19 @@ define([
             rosterData.lastKnownHash = hash;
         });
 
+        // Update metadata
         var state = roster.getState();
         var teamData = Util.find(ctx, ['store', 'proxy', 'teams', id]);
         if (teamData) { teamData.metadata = state.metadata; }
 
+        // Broadcast an event to all the tabs displaying this team
         team.sendEvent = function (q, data, sender) {
             ctx.emit(q, data, team.clients.filter(function (cId) {
                 return cId !== sender;
             }));
         };
 
+        // Provide team chat keys to the messenger app
         team.getChatData = function () {
             var chatKeys = keys.chat || {};
             var hash = chatKeys.edit || chatKeys.view;
@@ -184,14 +213,15 @@ define([
                 teamId: id,
                 channel: secret.channel,
                 secret: secret,
-                validateKey: secret.keys.validateKey
-                // XXX owners: team owner + all admins?
+                validateKey: chatKeys.validateKey
             };
         };
 
+        var secret;
         team.pin = function (data, cb) { return void cb({error: 'EFORBIDDEN'}); };
         team.unpin = function (data, cb) { return void cb({error: 'EFORBIDDEN'}); };
         nThen(function (waitFor) {
+            // Init Team RPC
             if (!keys.drive.edPrivate) { return; }
             initRpc(ctx, team, keys.drive, waitFor(function (err) {
                 if (err) { return; }
@@ -215,12 +245,18 @@ define([
                 };
             }));
         }).nThen(function () {
-            var loadSharedFolder = function (id, data, cb) {
+            // Create the proxy manager
+            var loadSharedFolder = function (id, data, cb, isNew) {
                 SF.load({
+                    isNew: isNew,
                     network: ctx.store.network,
-                    store: team
+                    store: team,
+                    isNewChannel: ctx.Store.isNewChannel
                 }, id, data, cb);
             };
+            var teamData = ctx.store.proxy.teams[team.id];
+            var hash = teamData.hash || teamData.roHash;
+            secret = Hash.getSecrets('team', hash, teamData.password);
             var manager = team.manager = ProxyManager.create(proxy.drive, {
                 onSync: function (cb) { ctx.Store.onSync(id, cb); },
                 edPublic: keys.drive.edPublic,
@@ -229,7 +265,8 @@ define([
                 loadSharedFolder: loadSharedFolder,
                 settings: {
                     drive: Util.find(ctx.store, ['proxy', 'settings', 'drive'])
-                }
+                },
+                Store: ctx.Store
             }, {
                 outer: true,
                 removeOwnedChannel: function (channel, cb) {
@@ -250,13 +287,19 @@ define([
                 log: function (msg) {
                     // broadcast to all drive apps
                     team.sendEvent("DRIVE_LOG", msg);
-                }
+                },
+                rt: team.realtime,
+                editKey: secret.keys.secondaryKey,
+                readOnly: Boolean(!secret.keys.secondaryKey)
             });
+            team.secondaryKey = secret && secret.keys.secondaryKey;
             team.userObject = manager.user.userObject;
             team.userObject.fixFiles();
         }).nThen(function (waitFor) {
+            // Load the shared folders
             ctx.teams[id] = team;
             registerChangeEvents(ctx, team, proxy);
+            SF.checkMigration(team.secondaryKey, proxy, team.userObject, waitFor());
             SF.loadSharedFolders(ctx.Store, ctx.store.network, team, team.userObject, waitFor);
         }).nThen(function () {
             if (!team.rpc) { return; }
@@ -290,15 +333,54 @@ define([
 
     };
 
-    var openChannel = function (ctx, teamData, id, cb) {
-        var secret = Hash.getSecrets('team', teamData.hash, teamData.password);
+    var openChannel = function (ctx, teamData, id, _cb) {
+        var cb = Util.once(Util.mkAsync(_cb));
+
+        var hash = teamData.hash || teamData.roHash;
+        var secret = Hash.getSecrets('team', hash, teamData.password);
         var crypto = Crypto.createEncryptor(secret.keys);
 
+        if (!teamData.roHash) {
+            teamData.roHash = Hash.getViewHashFromKeys(secret);
+        }
+
         var keys = teamData.keys;
+        if (!keys.chat.validateKey && keys.chat.edit) {
+            var chatSecret = Hash.getSecrets('chat', keys.chat.edit);
+            keys.chat.validateKey = chatSecret.keys.validateKey;
+        }
+
 
         var roster;
         var lm;
+
+        // Roster keys
+        var myKeys = {
+            curvePublic: ctx.store.proxy.curvePublic,
+            curvePrivate: ctx.store.proxy.curvePrivate
+        };
+        var rosterData = keys.roster || {};
+        var rosterKeys = rosterData.edit ? Crypto.Team.deriveMemberKeys(rosterData.edit, myKeys)
+                                        : Crypto.Team.deriveGuestKeys(rosterData.view || '');
+
         nThen(function (waitFor) {
+            ctx.store.anon_rpc.send("IS_NEW_CHANNEL", secret.channel, waitFor(function (e, response) {
+                if (response && response.length && typeof(response[0]) === 'boolean' && response[0]) {
+                    // Channel is empty: remove this team
+                    delete ctx.store.proxy.teams[id];
+                    waitFor.abort();
+                    cb({error: 'ENOENT'});
+                }
+            }));
+            ctx.store.anon_rpc.send("IS_NEW_CHANNEL", rosterKeys.channel, waitFor(function (e, response) {
+                if (response && response.length && typeof(response[0]) === 'boolean' && response[0]) {
+                    // Channel is empty: remove this team
+                    delete ctx.store.proxy.teams[id];
+                    waitFor.abort();
+                    cb({error: 'ENOENT'});
+                }
+            }));
+        }).nThen(function (waitFor) {
             // Load the proxy
             var cfg = {
                 data: {},
@@ -313,17 +395,25 @@ define([
                 userName: 'team',
                 classic: true
             };
+            cfg.onMetadataUpdate = function () {
+                var team = ctx.teams[id];
+                if (!team) { return; }
+                ctx.emit('ROSTER_CHANGE', id, team.clients);
+            };
             lm = Listmap.create(cfg);
             lm.proxy.on('ready', waitFor());
+            lm.proxy.on('error', function (info) {
+                if (info && typeof (info.loaded) !== "undefined"  && !info.loaded) {
+                    cb({error:'ECONNECT'});
+                }
+                if (info && info.error) {
+                    if (info.error === "EDELETED" ) {
+                        closeTeam(ctx, id);
+                    }
+                }
+            });
 
             // Load the roster
-            var myKeys = {
-                curvePublic: ctx.store.proxy.curvePublic,
-                curvePrivate: ctx.store.proxy.curvePrivate
-            };
-            var rosterData = keys.roster || {};
-            var rosterKeys = rosterData.edit ? Crypto.Team.deriveMemberKeys(rosterData.edit, myKeys)
-                                            : Crypto.Team.deriveGuestKeys(rosterData.view || '');
             Roster.create({
                 network: ctx.store.network,
                 channel: rosterKeys.channel,
@@ -333,6 +423,7 @@ define([
             }, waitFor(function (err, _roster) {
                 if (err) {
                     waitFor.abort();
+                    console.error(err);
                     return void cb({error: 'ROSTER_ERROR'});
                 }
                 roster = _roster;
@@ -381,6 +472,7 @@ define([
         var password = Hash.createChannelId();
         var hash = Hash.createRandomHash('team', password);
         var secret = Hash.getSecrets('team', hash, password);
+        var roHash = Hash.getViewHashFromKeys(secret);
         var keyPair = Nacl.sign.keyPair(); // keyPair.secretKey , keyPair.publicKey
 
         var rosterSeed = Crypto.Team.createSeed();
@@ -462,10 +554,16 @@ define([
                 }
             }));
         }).nThen(function () {
+            var id = Util.createRandomInteger();
+            config.onMetadataUpdate = function () {
+                var team = ctx.teams[id];
+                if (!team) { return; }
+                ctx.emit('ROSTER_CHANGE', id, team.clients);
+            };
             var lm = Listmap.create(config);
             var proxy = lm.proxy;
+            proxy.version = 2; // No migration needed
             proxy.on('ready', function () {
-                var id = Util.createRandomInteger();
                 // Store keys in our drive
                 var keys = {
                     drive: {
@@ -475,6 +573,7 @@ define([
                     chat: {
                         edit: chatHashes.editHash,
                         view: chatHashes.viewHash,
+                        validateKey: chatSecret.keys.validateKey,
                         channel: chatSecret.channel
                     },
                     roster: {
@@ -487,6 +586,7 @@ define([
                     owner: true,
                     channel: secret.channel,
                     hash: hash,
+                    roHash: roHash,
                     password: password,
                     keys: keys,
                     //members: membersHashes.editHash,
@@ -498,6 +598,7 @@ define([
                 proxy.drive = {};
 
                 onReady(ctx, id, lm, roster, keys, cId, function () {
+                    Feedback.send('TEAM_CREATION');
                     ctx.updateMetadata();
                     cb();
                 });
@@ -505,13 +606,123 @@ define([
                 if (info && typeof (info.loaded) !== "undefined"  && !info.loaded) {
                     cb({error:'ECONNECT'});
                 }
+                if (info && info.error) {
+                    if (info.error === "EDELETED") {
+                        closeTeam(ctx, id);
+                    }
+                }
             });
+        });
+    };
+
+    var deleteTeam = function (ctx, data, cId, cb) {
+        var teamId = data.teamId;
+        if (!teamId) { return void cb({error: 'EINVAL'}); }
+        var team = ctx.teams[teamId];
+        var teamData = Util.find(ctx, ['store', 'proxy', 'teams', teamId]);
+        if (!team || !teamData) { return void cb ({error: 'ENOENT'}); }
+        var state = team.roster.getState();
+        var curvePublic = Util.find(ctx, ['store', 'proxy', 'curvePublic']);
+        var me = state.members[curvePublic];
+        if (!me || me.role !== "OWNER") { return cb({ error: "EFORBIDDEN"}); }
+
+        var edPublic = Util.find(ctx, ['store', 'proxy', 'edPublic']);
+        var teamEdPublic = Util.find(teamData, ['keys', 'drive', 'edPublic']);
+
+        nThen(function (waitFor) {
+            ctx.Store.anonRpcMsg(null, {
+                msg: 'GET_METADATA',
+                data: teamData.channel
+            }, waitFor(function (obj) {
+                // If we can't get owners, abort
+                if (obj && obj.error) {
+                    waitFor.abort();
+                    return cb({ error: obj.error});
+                }
+                // Check if we're an owner of the team drive
+                var metadata = obj[0];
+                if (metadata && Array.isArray(metadata.owners) &&
+                    metadata.owners.indexOf(edPublic) !== -1) { return; }
+                // If w'e're not an owner, abort
+                waitFor.abort();
+                cb({error: 'EFORBIDDEN'});
+            }));
+        }).nThen(function (waitFor) {
+            team.proxy.delete = true;
+            // For each pad, check on the server if there are other owners.
+            // If yes, then remove yourself as an owner
+            // If no, delete the pad
+            var ownedPads = team.manager.getChannelsList('owned');
+            var sem = Saferphore.create(10);
+            ownedPads.forEach(function (c) {
+                var w = waitFor();
+                sem.take(function (give) {
+                    var otherOwners = false;
+                    nThen(function (_w) {
+                        ctx.Store.anonRpcMsg(null, {
+                            msg: 'GET_METADATA',
+                            data: c
+                        }, _w(function (obj) {
+                            if (obj && obj.error) {
+                                give();
+                                return void _w.abort();
+                            }
+                            var md = obj[0];
+                            var isOwner = md && Array.isArray(md.owners) && md.owners.indexOf(teamEdPublic) !== -1;
+                            if (!isOwner) {
+                                give();
+                                return void _w.abort();
+                            }
+                            otherOwners = md.owners.some(function (ed) { return ed !== teamEdPublic; });
+                        }));
+                    }).nThen(function (_w) {
+                        if (otherOwners) {
+                            ctx.Store.setPadMetadata(null, {
+                                channel: c,
+                                command: 'RM_OWNERS',
+                                value: [teamEdPublic],
+                            }, _w());
+                            return;
+                        }
+                        // We're the only owner: delete the pad
+                        team.rpc.removeOwnedChannel(c, _w(function (err) {
+                            if (err) { console.error(err); }
+                        }));
+                    }).nThen(function () {
+                        give();
+                        w();
+                    });
+                });
+             });
+        }).nThen(function (waitFor) {
+            // Delete the pins log
+            team.rpc.removePins(waitFor(function (err) {
+                if (err) { console.error(err); }
+            }));
+            // Delete the roster
+            var rosterChan = Util.find(teamData, ['keys', 'roster', 'channel']);
+            ctx.store.rpc.removeOwnedChannel(rosterChan, waitFor(function (err) {
+                if (err) { console.error(err); }
+            }));
+            // Delete the chat
+            var chatChan = Util.find(teamData, ['keys', 'chat', 'channel']);
+            ctx.store.rpc.removeOwnedChannel(chatChan, waitFor(function (err) {
+                if (err) { console.error(err); }
+            }));
+            // Delete the team drive
+            ctx.store.rpc.removeOwnedChannel(teamData.channel, waitFor(function (err) {
+                if (err) { console.error(err); }
+            }));
+        }).nThen(function () {
+            Feedback.send('TEAM_DELETION');
+            closeTeam(ctx, teamId);
+            cb();
         });
     };
 
     var joinTeam = function (ctx, data, cId, cb) {
         var team = data.team;
-        if (!team.hash || !team.channel || !team.password
+        if (!(team.hash || team.roHash) || !team.channel || !team.password
             || !team.keys || !team.metadata) { return void cb({error: 'EINVAL'}); }
         var id = Util.createRandomInteger();
         ctx.store.proxy.teams[id] = team;
@@ -540,11 +751,72 @@ define([
     var getTeamRoster = function (ctx, data, cId, cb) {
         var teamId = data.teamId;
         if (!teamId) { return void cb({error: 'EINVAL'}); }
+        var teamData = Util.find(ctx, ['store', 'proxy', 'teams', teamId]);
+        if (!teamData) { return void cb ({error: 'ENOENT'}); }
         var team = ctx.teams[teamId];
         if (!team) { return void cb ({error: 'ENOENT'}); }
         if (!team.roster) { return void cb({error: 'NO_ROSTER'}); }
         var state = team.roster.getState() || {};
-        cb(state.members || {});
+        var members = state.members || {};
+
+        // Get pending owners
+        var md = team.listmap.metadata || {};
+        if (Array.isArray(md.pending_owners)) {
+            // Get the members associated to the pending_owners' edPublic and mark them as such
+            md.pending_owners.forEach(function (ed) {
+                var member;
+                Object.keys(members).some(function (curve) {
+                    if (members[curve].edPublic === ed) {
+                        member = members[curve];
+                        return true;
+                    }
+                });
+                if (!member && teamData.owner) {
+                    var removeOwnership = function (chan) {
+                        ctx.Store.setPadMetadata(null, {
+                            channel: chan,
+                            command: 'RM_PENDING_OWNERS',
+                            value: [ed],
+                        }, function () {});
+                    };
+                    removeOwnership(teamData.channel);
+                    removeOwnership(Util.find(teamData, ['keys', 'roster', 'channel']));
+                    removeOwnership(Util.find(teamData, ['keys', 'chat', 'channel']));
+                    return;
+                }
+                member.pendingOwner = true;
+            });
+        }
+
+        // Add online status (using messenger data)
+        var chatData = team.getChatData();
+        var online = ctx.store.messenger.getOnlineList(chatData.channel) || [];
+        online.forEach(function (curve) {
+            if (members[curve]) {
+                members[curve].online = true;
+            }
+        });
+
+        cb(members);
+    };
+
+    // Return folders with edit rights available to everybody (decrypted pad href)
+    var getEditableFolders = function (ctx, data, cId, cb) {
+        var teamId = data.teamId;
+        if (!teamId) { return void cb({error: 'EINVAL'}); }
+        var team = ctx.teams[teamId];
+        if (!team) { return void cb ({error: 'ENOENT'}); }
+        var folders = team.manager.folders || {};
+        var ids = Object.keys(folders).filter(function (id) {
+            return !folders[id].proxy.version;
+        });
+        cb(ids.map(function (id) {
+            var uo = Util.find(team, ['user', 'userObject']);
+            return {
+                name: Util.find(folders, [id, 'proxy', 'metadata', 'title']),
+                path: uo ? uo.findFile(id)[0] : []
+            };
+        }));
     };
 
     var getTeamMetadata = function (ctx, data, cId, cb) {
@@ -573,6 +845,256 @@ define([
         });
     };
 
+    var offerOwnership = function (ctx, data, cId, _cb) {
+        var cb = Util.once(_cb);
+        var teamId = data.teamId;
+        if (!teamId) { return void cb({error: 'EINVAL'}); }
+        var teamData = Util.find(ctx, ['store', 'proxy', 'teams', teamId]);
+        if (!teamData) { return void cb ({error: 'ENOENT'}); }
+        var team = ctx.teams[teamId];
+        if (!team) { return void cb ({error: 'ENOENT'}); }
+        if (!team.roster) { return void cb({error: 'NO_ROSTER'}); }
+        if (!data.curvePublic) { return void cb({error: 'MISSING_DATA'}); }
+        var state = team.roster.getState();
+        var user = state.members[data.curvePublic];
+        nThen(function (waitFor) {
+            // Offer ownership to a friend
+            var onError = function (res) {
+                var err = res && res.error;
+                if (err) {
+                    console.error(err);
+                    waitFor.abort();
+                    return void cb({error:err});
+                }
+            };
+            var addPendingOwner = function (chan) {
+                ctx.Store.setPadMetadata(null, {
+                    channel: chan,
+                    command: 'ADD_PENDING_OWNERS',
+                    value: [user.edPublic],
+                }, waitFor(onError));
+            };
+            // Team proxy
+            addPendingOwner(teamData.channel);
+            // Team roster
+            addPendingOwner(Util.find(teamData, ['keys', 'roster', 'channel']));
+            // Team chat
+            addPendingOwner(Util.find(teamData, ['keys', 'chat', 'channel']));
+        }).nThen(function (waitFor) {
+            var obj = {};
+            obj[user.curvePublic] = {
+                role: 'OWNER'
+            };
+            team.roster.describe(obj, waitFor(function (err) {
+                if (err) { console.error(err); }
+            }));
+        }).nThen(function (waitFor) {
+            // Send mailbox to offer ownership
+            var myData = Messaging.createData(ctx.store.proxy, false);
+            ctx.store.mailbox.sendTo("ADD_OWNER", {
+                teamChannel: teamData.channel,
+                chatChannel: Util.find(teamData, ['keys', 'chat', 'channel']),
+                rosterChannel: Util.find(teamData, ['keys', 'roster', 'channel']),
+                title: teamData.metadata.name,
+                user: myData
+            }, {
+                channel: user.notifications,
+                curvePublic: user.curvePublic
+            }, waitFor());
+        }).nThen(function () {
+            cb();
+        });
+    };
+
+    var revokeOwnership = function (ctx, teamId, user, _cb) {
+        var cb = Util.once(_cb);
+        if (!teamId) { return void cb({error: 'EINVAL'}); }
+        var teamData = Util.find(ctx, ['store', 'proxy', 'teams', teamId]);
+        if (!teamData) { return void cb ({error: 'ENOENT'}); }
+        var team = ctx.teams[teamId];
+        if (!team) { return void cb ({error: 'ENOENT'}); }
+        var md = team.listmap.metadata || {};
+        var isPendingOwner = (md.pending_owners || []).indexOf(user.edPublic) !== -1;
+        nThen(function (waitFor) {
+            var cmd = isPendingOwner ? 'RM_PENDING_OWNERS' : 'RM_OWNERS';
+
+            var onError = function (res) {
+                var err = res && res.error;
+                if (err) {
+                    console.error(err);
+                    waitFor.abort();
+                    return void cb(err);
+                }
+            };
+            var removeOwnership = function (chan) {
+                ctx.Store.setPadMetadata(null, {
+                    channel: chan,
+                    command: cmd,
+                    value: [user.edPublic],
+                }, waitFor(onError));
+            };
+            // Team proxy
+            removeOwnership(teamData.channel);
+            // Team roster
+            removeOwnership(Util.find(teamData, ['keys', 'roster', 'channel']));
+            // Team chat
+            removeOwnership(Util.find(teamData, ['keys', 'chat', 'channel']));
+        }).nThen(function (waitFor) {
+            var obj = {};
+            obj[user.curvePublic] = {
+                role: 'ADMIN',
+                pendingOwner: false
+            };
+            team.roster.describe(obj, waitFor(function (err) {
+                if (err) { console.error(err); }
+            }));
+        }).nThen(function (waitFor) {
+            // Send mailbox to offer ownership
+            var myData = Messaging.createData(ctx.store.proxy, false);
+            ctx.store.mailbox.sendTo("RM_OWNER", {
+                teamChannel: teamData.channel,
+                title: teamData.metadata.name,
+                pending: isPendingOwner,
+                user: myData
+            }, {
+                channel: user.notifications,
+                curvePublic: user.curvePublic
+            }, waitFor());
+        }).nThen(function () {
+            cb();
+        });
+    };
+
+    // We've received an offer to be an owner of the team.
+    // If we accept, we need to set the "owner" flag in our team data
+    // If we decline, we need to change our role back to "ADMIN"
+    var answerOwnership = function (ctx, data, cId, cb) {
+        var myTeams = ctx.store.proxy.teams;
+        var teamId;
+        Object.keys(myTeams).forEach(function (id) {
+            if (myTeams[id].channel === data.teamChannel) {
+                teamId = id;
+                return true;
+            }
+        });
+        if (!teamId) { return void cb({error: 'EINVAL'}); }
+        var teamData = Util.find(ctx, ['store', 'proxy', 'teams', teamId]);
+        if (!teamData) { return void cb ({error: 'ENOENT'}); }
+        var team = ctx.teams[teamId];
+        if (!team) { return void cb ({error: 'ENOENT'}); }
+        if (!team.roster) { return void cb({error: 'NO_ROSTER'}); }
+        var obj = {};
+
+        // Accept
+        if (data.answer) {
+            teamData.owner = true;
+            return;
+        }
+        // Decline
+        obj[ctx.store.proxy.curvePublic] = {
+            role: 'ADMIN',
+        };
+        team.roster.describe(obj, function (err) {
+            if (err) { return void cb({error: err}); }
+            cb();
+        });
+    };
+
+    var getInviteData = function (ctx, teamId, edit) {
+        var teamData = Util.find(ctx, ['store', 'proxy', 'teams', teamId]);
+        if (!teamData) { return {}; }
+        var data = Util.clone(teamData);
+        if (!edit) {
+            // Delete edit keys
+            delete data.hash;
+            delete data.keys.drive.edPrivate;
+            delete data.keys.chat.edit;
+        }
+        // Delete owner key
+        delete data.owner;
+        return data;
+    };
+
+    // Update my edit rights in listmap (only upgrade) and userObject (upgrade and downgrade)
+    // We also need to propagate the changes to the shared folders
+    var updateMyRights = function (ctx, teamId, hash) {
+        if (!teamId) { return true; }
+        var teamData = Util.find(ctx, ['store', 'proxy', 'teams', teamId]);
+        if (!teamData) { return true; }
+        var team = ctx.teams[teamId];
+
+        var secret = Hash.getSecrets('team', hash || teamData.roHash, teamData.password);
+        // Upgrade the listmap if we can
+        SF.upgrade(teamData.channel, secret);
+        // Set the new readOnly value in userObject
+        if (team.userObject) {
+            team.userObject.setReadOnly(!secret.keys.secondaryKey, secret.keys.secondaryKey);
+        }
+
+        if (!secret.keys.secondaryKey && team.rpc) {
+            team.rpc.destroy();
+        }
+
+        // Upgrade the shared folders
+        var folders = Util.find(team, ['proxy', 'drive', 'sharedFolders']);
+        Object.keys(folders || {}).forEach(function (sfId) {
+            var data = team.manager.getSharedFolderData(sfId);
+            var parsed = Hash.parsePadUrl(data.href || data.roHref);
+            var secret = Hash.getSecrets(parsed.type, parsed.hash, data.password);
+            SF.upgrade(secret.channel, secret);
+            var uo = Util.find(team, ['manager', 'folders', sfId, 'userObject']);
+            if (uo) {
+                uo.setReadOnly(!secret.keys.secondaryKey, secret.keys.secondaryKey);
+            }
+        });
+        ctx.updateMetadata();
+        ctx.emit('ROSTER_CHANGE_RIGHTS', teamId, team.clients);
+    };
+
+    var changeMyRights = function (ctx, teamId, state, data) {
+        if (!teamId) { return true; }
+        var teamData = Util.find(ctx, ['store', 'proxy', 'teams', teamId]);
+        if (!teamData) { return true; }
+        var team = ctx.teams[teamId];
+        if (!team) { return true; }
+
+        if (teamData.channel !== data.channel || teamData.password !== data.password) { return true; }
+
+        if (state) {
+            teamData.hash = data.hash;
+            teamData.keys.drive.edPrivate = data.keys.drive.edPrivate;
+            teamData.keys.chat.edit = data.keys.chat.edit;
+
+            var secret = Hash.getSecrets('team', data.hash, teamData.password);
+            team.secondaryKey = secret && secret.keys.secondaryKey;
+        } else {
+            delete teamData.hash;
+            delete teamData.keys.drive.edPrivate;
+            delete teamData.keys.chat.edit;
+            delete team.secondaryKey;
+        }
+
+        updateMyRights(ctx, teamId, data.hash);
+    };
+    var changeEditRights = function (ctx, teamId, user, state, cb) {
+        if (!teamId) { return void cb({error: 'EINVAL'}); }
+        var teamData = Util.find(ctx, ['store', 'proxy', 'teams', teamId]);
+        if (!teamData) { return void cb ({error: 'ENOENT'}); }
+        var team = ctx.teams[teamId];
+        if (!team) { return void cb ({error: 'ENOENT'}); }
+
+        // Send mailbox to offer ownership
+        var myData = Messaging.createData(ctx.store.proxy, false);
+        ctx.store.mailbox.sendTo("TEAM_EDIT_RIGHTS", {
+            state: state,
+            teamData: getInviteData(ctx, teamId, state),
+            user: myData
+        }, {
+            channel: user.notifications,
+            curvePublic: user.curvePublic
+        }, cb);
+    };
+
     var describeUser = function (ctx, data, cId, cb) {
         var teamId = data.teamId;
         if (!teamId) { return void cb({error: 'EINVAL'}); }
@@ -580,21 +1102,39 @@ define([
         if (!team) { return void cb ({error: 'ENOENT'}); }
         if (!team.roster) { return void cb({error: 'NO_ROSTER'}); }
         if (!data.curvePublic || !data.data) { return void cb({error: 'MISSING_DATA'}); }
+        var state = team.roster.getState();
+        var user = state.members[data.curvePublic];
+
+        // It it is an ownership revocation, we have to set it in pad metadata first
+        if (user.role === "OWNER" && data.data.role !== "OWNER") {
+            revokeOwnership(ctx, teamId, user, function (err) {
+                if (!err) { return void cb(); }
+                console.error(err);
+                return void cb({error: err});
+            });
+            return;
+        }
+
+        // Viewer to editor
+        if (user.role === "VIEWER" && data.data.role !== "VIEWER") {
+            changeEditRights(ctx, teamId, user, true, function (err) {
+                return void cb({error: err});
+            });
+        }
+
+        // Editor to viewer
+        if (user.role !== "VIEWER" && data.data.role === "VIEWER") {
+            changeEditRights(ctx, teamId, user, false, function (err) {
+                return void cb({error: err});
+            });
+        }
+
         var obj = {};
         obj[data.curvePublic] = data.data;
         team.roster.describe(obj, function (err) {
             if (err) { return void cb({error: err}); }
             cb();
         });
-    };
-
-    // TODO send guest keys only in the future
-    var getInviteData = function (ctx, teamId) {
-        var teamData = Util.find(ctx, ['store', 'proxy', 'teams', teamId]);
-        if (!teamData) { return {}; }
-        var data = Util.clone(teamData);
-        delete data.owner;
-        return data;
     };
 
     var inviteToTeam = function (ctx, data, cId, cb) {
@@ -611,6 +1151,7 @@ define([
 
         var obj = {};
         obj[user.curvePublic] = user;
+        obj[user.curvePublic].role = 'VIEWER';
         team.roster.add(obj, function (err) {
             if (err && err !== 'NO_CHANGE') { return void cb({error: err}); }
             ctx.store.mailbox.sendTo('INVITE_TO_TEAM', {
@@ -635,13 +1176,12 @@ define([
 
         var state = team.roster.getState();
         var userData = state.members[data.curvePublic];
-        console.error(userData);
         team.roster.remove([data.curvePublic], function (err) {
             if (err) { return void cb({error: err}); }
             // The user has been removed, send them a notification
             if (!userData || !userData.notifications) { return cb(); }
-            console.log('send notif');
             ctx.store.mailbox.sendTo('KICKED_FROM_TEAM', {
+                pending: data.pending,
                 user: Messaging.createData(ctx.store.proxy, false),
                 teamChannel: getInviteData(ctx, teamId).channel,
                 teamName: getInviteData(ctx, teamId).metadata.name
@@ -711,7 +1251,10 @@ define([
     var openTeamChat = function (ctx, data, cId, cb) {
         var team = ctx.teams[data.teamId];
         if (!team) { return void cb({error: 'ENOENT'}); }
-        ctx.store.messenger.openTeamChat(team.getChatData(), cId, cb);
+        var onUpdate = function () {
+            ctx.emit('ROSTER_CHANGE', data.teamId, team.clients);
+        };
+        ctx.store.messenger.openTeamChat(team.getChatData(), onUpdate, cId, cb);
     };
 
     Team.init = function (cfg, waitFor, emit) {
@@ -730,13 +1273,21 @@ define([
 
         var teams = store.proxy.teams = store.proxy.teams || {};
 
-        initializeTeams(ctx, waitFor(function (err) {
-            if (err) { return; }
-        }));
+        // Listen for changes in our access rights (if another worker receives edit access)
+        ctx.store.proxy.on('change', ['teams'], function (o, n, p) {
+            if (p[2] !== 'hash') { return; }
+            updateMyRights(ctx, p[1], n);
+        });
+        ctx.store.proxy.on('remove', ['teams'], function (o, p) {
+            if (p[2] !== 'hash') { return; }
+            updateMyRights(ctx, p[1]);
+        });
+
 
         Object.keys(teams).forEach(function (id) {
             ctx.onReadyHandlers[id] = [];
-            openChannel(ctx, teams[id], id, waitFor(function () {
+            openChannel(ctx, teams[id], id, waitFor(function (err) {
+                if (err) { return void console.error(err); }
                 console.debug('Team '+id+' ready');
             }));
         });
@@ -744,14 +1295,25 @@ define([
         team.getTeam = function (id) {
             return ctx.teams[id];
         };
-        team.getTeamsData = function () {
+        team.getTeamsData = function (app) {
             var t = {};
+            var safe = false;
+            if (['drive', 'teams', 'settings'].indexOf(app) !== -1) { safe = true; }
             Object.keys(teams).forEach(function (id) {
                 t[id] = {
+                    owner: teams[id].owner,
                     name: teams[id].metadata.name,
                     edPublic: Util.find(teams[id], ['keys', 'drive', 'edPublic']),
-                    avatar: Util.find(teams[id], ['metadata', 'avatar'])
+                    avatar: Util.find(teams[id], ['metadata', 'avatar']),
+                    viewer: !Util.find(teams[id], ['keys', 'drive', 'edPrivate']),
+
                 };
+                if (safe && ctx.teams[id]) {
+                    t[id].secondaryKey = ctx.teams[id].secondaryKey;
+                }
+                if (ctx.teams[id]) {
+                    t[id].hasSecondaryKey = Boolean(ctx.teams[id].secondaryKey);
+                }
             });
             return t;
         };
@@ -774,6 +1336,20 @@ define([
                 if (err && err !== 'NO_CHANGE') { console.error(err); }
             });
 
+        };
+        team.changeMyRights = function (id, edit, teamData) {
+            changeMyRights(ctx, id, edit, teamData);
+        };
+        team.updateMyData = function (data) {
+            Object.keys(ctx.teams).forEach(function (id) {
+                var team = ctx.teams[id];
+                if (!team.roster) { return; }
+                var obj = {};
+                obj[data.curvePublic] = data;
+                team.roster.describe(obj, function (err) {
+                    if (err) { console.error(err); }
+                });
+            });
         };
         team.removeClient = function (clientId) {
             removeClient(ctx, clientId);
@@ -800,6 +1376,12 @@ define([
             if (cmd === 'SET_TEAM_METADATA') {
                 return void setTeamMetadata(ctx, data, clientId, cb);
             }
+            if (cmd === 'OFFER_OWNERSHIP') {
+                return void offerOwnership(ctx, data, clientId, cb);
+            }
+            if (cmd === 'ANSWER_OWNERSHIP') {
+                return void answerOwnership(ctx, data, clientId, cb);
+            }
             if (cmd === 'DESCRIBE_USER') {
                 return void describeUser(ctx, data, clientId, cb);
             }
@@ -815,8 +1397,14 @@ define([
             if (cmd === 'REMOVE_USER') {
                 return void removeUser(ctx, data, clientId, cb);
             }
+            if (cmd === 'DELETE_TEAM') {
+                return void deleteTeam(ctx, data, clientId, cb);
+            }
             if (cmd === 'CREATE_TEAM') {
                 return void createTeam(ctx, data, clientId, cb);
+            }
+            if (cmd === 'GET_EDITABLE_FOLDERS') {
+                return void getEditableFolders(ctx, data, clientId, cb);
             }
         };
 

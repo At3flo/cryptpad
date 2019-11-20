@@ -242,7 +242,7 @@
             margin-left: -2px;
         }
         .cp-app-drive-tree-docs {
-            margin-top: 20px;
+            margin-top: 15px;
             //padding: 0 0 0 20px;
             padding: 0;
             cursor: auto;
@@ -269,6 +269,12 @@
                     cursor: pointer;
                     margin-left: -5px;
                     padding-left: 5px;
+                    .fa, .cptools {
+                        display: inline-block;
+                        min-width: 0;
+                        width: 25px;
+                        margin-right: 0px;
+                    }
                 }
             }
         }
@@ -460,6 +466,7 @@
             padding: 0.25em 0.75em;
             margin: 1em;
             background: @drive_info-box-bg;
+            cursor: default;
             span {
                 cursor: pointer;
                 float: right;
@@ -836,6 +843,8 @@
                 font-size: @colortheme_app-font-size;
                 color: @colortheme_drive-color;
                 transition: all 0.15s;
+                display: inline-flex;
+                align-items: center;
                 .drawer {
                     display: none;
                 }
@@ -969,6 +978,29 @@
         .cp-app-drive-toolbar-filler {
             flex: 1;
         }
+    }
+
+    #cp-app-drive-edition-state {
+        height: @variables_bar-height;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: lighten(@colortheme_drive-bg, 32%);
+        color: black;
+        font-weight: bold;
+        text-transform: uppercase;
+        cursor: default;
+    }
+    #cp-app-drive-connection-state {
+        height: @variables_bar-height;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: #eb675e;
+        color: white;
+        font-weight: bold;
+        text-transform: uppercase;
+        cursor: default;
     }
 }
 
