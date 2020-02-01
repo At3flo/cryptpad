@@ -9,6 +9,7 @@ define([
     '/common/common-feedback.js',
     '/common/common-realtime.js',
     '/common/common-messaging.js',
+    '/common/pinpad.js',
     '/common/outer/sharedfolder.js',
     '/common/outer/cursor.js',
     '/common/outer/onlyoffice.js',
@@ -26,7 +27,7 @@ define([
     '/bower_components/nthen/index.js',
     '/bower_components/saferphore/index.js',
 ], function (Sortify, UserObject, ProxyManager, Migrate, Hash, Util, Constants, Feedback,
-             Realtime, Messaging,
+             Realtime, Messaging, Pinpad,
              SF, Cursor, OnlyOffice, Mailbox, Profile, Team, Messenger,
              NetConfig, AppConfig,
              Crypto, ChainPad, CpNetflux, Listmap, nThen, Saferphore) {
@@ -409,19 +410,17 @@ define([
         var initRpc = function (clientId, data, cb) {
             if (!store.loggedIn) { return cb(); }
             if (store.rpc) { return void cb(account); }
-            require(['/common/pinpad.js'], function (Pinpad) {
-                Pinpad.create(store.network, store.proxy, function (e, call) {
-                    if (e) { return void cb({error: e}); }
+            Pinpad.create(store.network, store.proxy, function (e, call) {
+                if (e) { return void cb({error: e}); }
 
-                    store.rpc = call;
+                store.rpc = call;
 
-                    Store.getPinLimit(null, null, function (obj) {
-                        if (obj.error) { console.error(obj.error); }
-                        account.limit = obj.limit;
-                        account.plan = obj.plan;
-                        account.note = obj.note;
-                        cb(obj);
-                    });
+                Store.getPinLimit(null, null, function (obj) {
+                    if (obj.error) { console.error(obj.error); }
+                    account.limit = obj.limit;
+                    account.plan = obj.plan;
+                    account.note = obj.note;
+                    cb(obj);
                 });
             });
         };
@@ -575,7 +574,8 @@ define([
                     support: Util.find(store.proxy, ['mailboxes', 'support', 'channel']),
                     pendingFriends: store.proxy.friends_pending || {},
                     supportPrivateKey: Util.find(store.proxy, ['mailboxes', 'supportadmin', 'keys', 'curvePrivate']),
-                    teams: teams
+                    teams: teams,
+                    plan: account.plan
                 }
             };
             cb(JSON.parse(JSON.stringify(metadata)));
@@ -1272,6 +1272,12 @@ define([
             });
         };
 
+        Store.anonGetPreviewContent = function (clientId, data, cb) {
+            Team.anonGetPreviewContent({
+                store: store
+            }, data, cb);
+        };
+
         // Get hashes for the share button
         // If we can find a stronger hash
         Store.getStrongerHash = function (clientId, data, _cb) {
@@ -1646,6 +1652,73 @@ define([
             cb();
         };
 
+        // Delete a pad received with a burn after reading URL
+
+        var notifyOwnerPadRemoved = function (data, obj) {
+            var channel = data.channel;
+            var href = data.href;
+            var parsed = Hash.parsePadUrl(href);
+            var secret = Hash.getSecrets(parsed.type, parsed.hash, data.password);
+            if (obj && obj.error) { return; }
+            if (!obj.mailbox) { return; }
+
+            // Decrypt the mailbox
+            var crypto = Crypto.createEncryptor(secret.keys);
+            var m = [];
+            try {
+                if (typeof (obj.mailbox) === "string") {
+                    m.push(crypto.decrypt(obj.mailbox, true, true));
+                } else {
+                    Object.keys(obj.mailbox).forEach(function (k) {
+                        m.push(crypto.decrypt(obj.mailbox[k], true, true));
+                    });
+                }
+            } catch (e) {
+                console.error(e);
+            }
+            // Tell all the owners that the pad was deleted from the server
+            var curvePublic = store.proxy.curvePublic;
+            var myData = Messaging.createData(store.proxy, false);
+            m.forEach(function (obj) {
+                var mb = JSON.parse(obj);
+                if (mb.curvePublic === curvePublic) { return; }
+                store.mailbox.sendTo('OWNED_PAD_REMOVED', {
+                    channel: channel,
+                    user: myData
+                }, {
+                    channel: mb.notifications,
+                    curvePublic: mb.curvePublic
+                }, function () {});
+            });
+        };
+
+        Store.burnPad = function (clientId, data) {
+            var channel = data.channel;
+            var ownerKey = Crypto.b64AddSlashes(data.ownerKey || '');
+            if (!channel || !ownerKey) { return void console.error("Can't delete BAR pad"); }
+            try {
+                var signKey = Hash.decodeBase64(ownerKey);
+                var pair = Crypto.Nacl.sign.keyPair.fromSecretKey(signKey);
+                Pinpad.create(store.network, {
+                    edPublic: Hash.encodeBase64(pair.publicKey),
+                    edPrivate: Hash.encodeBase64(pair.secretKey)
+                }, function (e, rpc) {
+                    if (e) { return void console.error(e); }
+                    Store.getPadMetadata(null, {
+                        channel: channel
+                    }, function (md) {
+                        rpc.removeOwnedChannel(channel, function (err) {
+                            if (err) { return void console.error(err); }
+                            // Notify owners that the pad was removed
+                            notifyOwnerPadRemoved(data, md);
+                        });
+                    });
+                });
+            } catch (e) {
+                console.error(e);
+            }
+        };
+
         // Fetch the latest version of the metadata on the server and return it.
         // If the pad is stored in our drive, update the local values of "owners" and "expire"
         Store.getPadMetadata = function (clientId, data, cb) {
@@ -1692,7 +1765,7 @@ define([
         // GET_FULL_HISTORY from sframe-common-outer
         Store.getFullHistory = function (clientId, data, cb) {
             var network = store.network;
-            var hkn = network.historyKeeper;
+            var hk = network.historyKeeper;
             //var crypto = Crypto.createEncryptor(data.keys);
             // Get the history messages and send them to the iframe
             var parse = function (msg) {
@@ -1707,8 +1780,10 @@ define([
             var onMsg = function (msg) {
                 if (completed) { return; }
                 var parsed = parse(msg);
+                if (!parsed) { return; }
                 if (parsed[0] === 'FULL_HISTORY_END') {
                     cb(msgs);
+                    network.off('message', onMsg);
                     completed = true;
                     return;
                 }
@@ -1725,12 +1800,69 @@ define([
                 }
             };
             network.on('message', onMsg);
-            network.sendto(hkn, JSON.stringify(['GET_FULL_HISTORY', data.channel, data.validateKey]));
+            network.sendto(hk, JSON.stringify(['GET_FULL_HISTORY', data.channel, data.validateKey]));
+        };
+
+        Store.getHistory = function (clientId, data, cb) {
+            var network = store.network;
+            var hk = network.historyKeeper;
+
+            var parse = function (msg) {
+                try {
+                    return JSON.parse(msg);
+                } catch (e) {
+                    return null;
+                }
+            };
+
+            var msgs = [];
+            var completed = false;
+            var onMsg = function (msg, sender) {
+                if (completed) { return; }
+                if (sender !== hk) { return; }
+                var parsed = parse(msg);
+                if (!parsed) { return; }
+
+                // Ignore the metadata message
+                if (parsed.validateKey && parsed.channel) { return; }
+                if (parsed.error && parsed.channel) {
+                    if (parsed.channel === data.channel) {
+                        network.off('message', onMsg);
+                        completed = true;
+                        cb({error: parsed.error});
+                    }
+                    return;
+                }
+
+                // End of history: cb
+                if (parsed.state === 1 && parsed.channel) {
+                    if (parsed.channel !== data.channel) { return; }
+                    cb(msgs);
+                    network.off('message', onMsg);
+                    completed = true;
+                    return;
+                }
+
+                msg = parsed[4];
+                // Keep only the history for our channel
+                if (parsed[3] !== data.channel) { return; }
+                if (msg) {
+                    msg = msg.replace(/cp\|(([A-Za-z0-9+\/=]+)\|)?/, '');
+                    msgs.push(msg);
+                }
+            };
+            network.on('message', onMsg);
+
+            var cfg = {
+                lastKnownHash: data.lastKnownHash
+            };
+            var msg = ['GET_HISTORY', data.channel, cfg];
+            network.sendto(hk, JSON.stringify(msg));
         };
 
         Store.getHistoryRange = function (clientId, data, cb) {
             var network = store.network;
-            var hkn = network.historyKeeper;
+            var hk = network.historyKeeper;
             var parse = function (msg) {
                 try {
                     return JSON.parse(msg);
@@ -1778,7 +1910,7 @@ define([
             };
 
             network.on('message', onMsg);
-            network.sendto(hkn, JSON.stringify(['GET_HISTORY_RANGE', data.channel, {
+            network.sendto(hk, JSON.stringify(['GET_HISTORY_RANGE', data.channel, {
                 from: data.lastKnownHash,
                 cpCount: 2,
                 txid: txid
@@ -1835,8 +1967,9 @@ define([
             //var data = cmdData.data;
             var s = getStore(cmdData.teamId);
             if (s.offline) {
-              broadcast([], 'NETWORK_DISCONNECT');
-              return void cb({ error: 'OFFLINE' });
+                var send = s.id ? s.sendEvent : sendDriveEvent;
+                send('NETWORK_DISCONNECT');
+                return void cb({ error: 'OFFLINE' });
             }
             var cb2 = function (data2) {
                 // Send the CHANGE event to all the stores because the command may have
@@ -2041,6 +2174,11 @@ define([
                 store: store,
                 updateMetadata: function () {
                     broadcast([], "UPDATE_METADATA");
+                },
+                updateDrive: function () {
+                    sendDriveEvent('DRIVE_CHANGE', {
+                        path: ['drive', 'filesData']
+                    });
                 },
                 pinPads: function (data, cb) { Store.pinPads(null, data, cb); },
             }, waitFor, function (ev, data, clients, _cb) {
@@ -2291,17 +2429,18 @@ define([
                 if (path[0] === 'drive' && path[1] === "migrate" && value === 1) {
                     rt.network.disconnect();
                     rt.realtime.abort();
-                    broadcast([], 'NETWORK_DISCONNECT');
+                    sendDriveEvent('NETWORK_DISCONNECT');
                 }
             });
 
+            // Proxy handlers (reconnect only called when the proxy is ready)
             rt.proxy.on('disconnect', function () {
                 store.offline = true;
-                broadcast([], 'NETWORK_DISCONNECT');
+                sendDriveEvent('NETWORK_DISCONNECT');
             });
-            rt.proxy.on('reconnect', function (info) {
+            rt.proxy.on('reconnect', function () {
                 store.offline = false;
-                broadcast([], 'NETWORK_RECONNECT', {myId: info.myId});
+                sendDriveEvent('NETWORK_RECONNECT');
             });
 
             // Ping clients regularly to make sure one tab was not closed without sending a removeClient()

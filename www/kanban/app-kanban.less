@@ -54,6 +54,7 @@
             .kanban-item-text {
                 cursor: text;
                 overflow-wrap: anywhere;
+                flex: 1;
             }
         }
 
@@ -67,11 +68,14 @@
                     margin-right: 10px;
                     min-width: 0;
                     overflow: hidden;
-                    white-space: nowrap;
+                    //white-space: nowrap;
                     text-overflow: ellipsis;
                 }
                 #kanban-edit {
                     font-weight: bold;
+                }
+                &:hover {
+                    cursor: move;
                 }
             }
         }

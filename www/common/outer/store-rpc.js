@@ -60,6 +60,8 @@ define([
             // Messaging
             ANSWER_FRIEND_REQUEST: Store.answerFriendRequest,
             SEND_FRIEND_REQUEST: Store.sendFriendRequest,
+            // Team invitation
+            ANON_GET_PREVIEW_CONTENT: Store.anonGetPreviewContent,
             // OnlyOffice
             OO_COMMAND: Store.onlyoffice.execCommand,
             // Cursor
@@ -73,10 +75,12 @@ define([
             JOIN_PAD: Store.joinPad,
             LEAVE_PAD: Store.leavePad,
             GET_FULL_HISTORY: Store.getFullHistory,
+            GET_HISTORY: Store.getHistory,
             GET_HISTORY_RANGE: Store.getHistoryRange,
             IS_NEW_CHANNEL: Store.isNewChannel,
             REQUEST_PAD_ACCESS: Store.requestPadAccess,
             GIVE_PAD_ACCESS: Store.givePadAccess,
+            BURN_PAD: Store.burnPad,
             GET_PAD_METADATA: Store.getPadMetadata,
             SET_PAD_METADATA: Store.setPadMetadata,
             CHANGE_PAD_PASSWORD_PIN: Store.changePadPasswordPin,

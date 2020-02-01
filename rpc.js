@@ -228,13 +228,15 @@ var truthyKeys = function (O) {
     });
 };
 
-var getChannelList = function (Env, publicKey, cb) {
+var getChannelList = function (Env, publicKey, _cb) {
+    var cb = Util.once(Util.mkAsync(_cb));
     loadUserPins(Env, publicKey, function (pins) {
         cb(truthyKeys(pins));
     });
 };
 
-var getFileSize = function (Env, channel, cb) {
+var getFileSize = function (Env, channel, _cb) {
+    var cb = Util.once(Util.mkAsync(_cb));
     if (!isValidId(channel)) { return void cb('INVALID_CHAN'); }
     if (channel.length === 32) {
         if (typeof(Env.msgStore.getChannelSize) !== 'function') {
@@ -416,20 +418,46 @@ var getDeletedPads = function (Env, channels, cb) {
 
 const batchTotalSize = BatchRead("GET_TOTAL_SIZE");
 var getTotalSize = function (Env, publicKey, cb) {
-    batchTotalSize(publicKey, cb, function (done) {
-        var bytes = 0;
-        return void getChannelList(Env, publicKey, function (channels) {
-            if (!channels) { return done('INVALID_PIN_LIST'); } // unexpected
+    var unescapedKey = unescapeKeyCharacters(publicKey);
+    var limit = Env.limits[unescapedKey];
 
-            nThen(function (w) {
-                channels.forEach(function (channel) { // TODO semaphore?
-                    getFileSize(Env, channel, w(function (e, size) {
-                        if (!e) { bytes += size; }
+    // Get a common key if multiple users share the same quota, otherwise take the public key
+    var batchKey = (limit && Array.isArray(limit.users)) ? limit.users.join('') : publicKey;
+
+    batchTotalSize(batchKey, cb, function (done) {
+        var channels = [];
+        var bytes = 0;
+        nThen(function (waitFor) {
+            // Get the channels list for our user account
+            getChannelList(Env, publicKey, waitFor(function (_channels) {
+                if (!_channels) {
+                    waitFor.abort();
+                    return done('INVALID_PIN_LIST');
+                }
+                Array.prototype.push.apply(channels, _channels);
+            }));
+            // Get the channels list for users sharing our quota
+            if (limit && Array.isArray(limit.users) && limit.users.length > 1) {
+                limit.users.forEach(function (key) {
+                    if (key === unescapedKey) { return; } // Don't count ourselves twice
+                    getChannelList(Env, key, waitFor(function (_channels) {
+                        if (!_channels) { return; } // Broken user, don't count their quota
+                        Array.prototype.push.apply(channels, _channels);
                     }));
                 });
-            }).nThen(function () {
-                done(void 0, bytes);
+            }
+        }).nThen(function (waitFor) {
+            // Get size of the channels
+            var list = []; // Contains the channels already counted in the quota to avoid duplicates
+            channels.forEach(function (channel) { // TODO semaphore?
+                if (list.indexOf(channel) !== -1) { return; }
+                list.push(channel);
+                getFileSize(Env, channel, waitFor(function (e, size) {
+                    if (!e) { bytes += size; }
+                }));
             });
+        }).nThen(function () {
+            done(void 0, bytes);
         });
     });
 };
@@ -1034,7 +1062,7 @@ var writeLoginBlock = function (Env, msg, cb) { // FIXME BLOCKS
             // flow is dumb and I need to guard against this which will never happen
             /*:: if (typeof(validatedBlock) === 'undefined') { throw new Error('should never happen'); } */
             /*:: if (typeof(path) === 'undefined') { throw new Error('should never happen'); } */
-            Fs.writeFile(path, new Buffer(validatedBlock), { encoding: "binary", }, function (err) {
+            Fs.writeFile(path, Buffer.from(validatedBlock), { encoding: "binary", }, function (err) {
                 if (err) { return void cb(err); }
                 cb();
             });
@@ -1341,7 +1369,6 @@ type NetfluxWebsocketSrvContext_t = {
 */
 RPC.create = function (
     config /*:Config_t*/,
-    debuggable /*:<T>(string, T)=>T*/,
     cb /*:(?Error, ?Function)=>void*/
 ) {
     Log = config.log;
@@ -1376,8 +1403,6 @@ RPC.create = function (
     } catch (e) {
         console.error("Can't parse admin keys. Please update or fix your config.js file!");
     }
-
-    debuggable('rpc_env', Env);
 
     var Sessions = Env.Sessions;
     var paths = Env.paths;

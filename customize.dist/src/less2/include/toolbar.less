@@ -97,6 +97,12 @@
 
     .ckeditor_fix();
 
+    .cp-burn-after-reading {
+        text-align: center;
+        font-size: @colortheme_app-font-size !important;
+        margin: 0 !important;
+    }
+
     .cp-markdown-toolbar {
         height: @toolbar_line-height;
         background-color: @toolbar-bg-color-l20;
@@ -507,7 +513,8 @@
             }
         }
         .cp-toolbar-top {
-            @media screen and (max-width: @browser_media-medium-screen) {
+            @media screen and (max-width: @browser_media-medium-screen),
+                   screen and (max-height: 500px) {
                 flex-wrap: wrap;
                 height: @toolbar_line-height;
                 .cp-pad-not-pinned {

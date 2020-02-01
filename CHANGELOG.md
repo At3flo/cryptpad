@@ -1,3 +1,251 @@
+# Kouprey release (3.10.0)
+
+## Goals
+
+For this release we aimed to finish the last major feature of our CryptPad Teams project as well as some long-awaited features that we've planned to demo at FOSDEM 2020.
+
+## Update notes
+
+The CryptPad repository's _docs_ directory now includes a _systemd service file_ which you can use to ensure that CryptPad stays up and running. We're working on some step-by-step documentation to describe how to make use of it, but for now you can probably find some instructions by searching the web.
+
+We've also updated the provided example.nginx.conf to include a minor but important change to the CSP settings for our OnlyOffice spreadsheet integration.
+
+Up until now we have not been deleting unowned encrypted files from our server. As of this release `cryptpad/scripts/evict-inactive.js` includes logic to identify inactive, unpinned files. Identified files are first moved to your instance's _archive_ directory for a configurable period, after which they are deleted. This script is not run automatically, so if you haven't configured a cron job to run periodically then inactive files will not be removed. We recommend running the script once per day at a time when you expect your server to be relatively idle, since it consumes a non-negligible amount of server resources.
+
+Finally, in case you live in a political jurisdiction that requires web site administrators to display their legal information, we've made it easier to add a link to a custom page. See `cryptpad/www/common/application_config_internal.js` for details, particularly the comments above `config.imprint`.
+
+To update from v3.9.0:
+
+1. update the CSP settings in your reverse proxy's configuration file to match those in nginx.example.conf
+  * don't forget to reload your server to ensure that your changes are deployed
+2. stop your API server
+3. pull the latest server/client code with `git pull origin master`
+4. install the latest clientside dependencies with `bower update`
+5. relaunch your server
+
+## Features
+
+* Owned pads can now be shared in _self-destruct_ mode as an additional option in the _access rights_ section of the _share menu_.
+  * to use self-destructing pads:
+    1. select `View once and self-destruct`
+    2. share the _self-destructing pad link_ directly with a contact or create and copy a link
+    3. recipients who open the link will land on a warning page informing them about what is about to happen
+    4. once they click through the link, they'll see the content and automatically delete it from the server
+    5. opening the same link a second time will not yield any content
+  * note that deletion affects the original document that you choose to share. It does not create a copy
+* We no longer consider spreadsheets to be a BETA application!
+  * we've been using them for some time and while there are still points to improve we consider them stable enough for regular use
+  * this change in status is due to a few big updates:
+    1. we've integrated a recent version of OnlyOffice in which a number of bugs were fixed
+    2. we've enabled the use of spreadsheets for unregistered users, though registration is still free and will provide a better experience
+    3. it's now possible to upload encrypted images into your spreadsheets, in case you're the type of person that puts images in spreadsheets
+    4. you can also import and export spreadsheets between CryptPad's internal format and XLSX. This conversion is run entirely in your browser, so your documents stay private. Unfortunately it relies on some new features that are not available in all browsers. Chrome currently supports it, and we expect Firefox to enable support as of February 11th, 2020
+* Finally, we've continued to receive contributions from our numerous translators (via https://weblate.cryptpad.fr) in the following languages (alphabetical order):
+  * Catalan
+  * Finnish
+  * German
+  * Italian
+  * Spanish
+
+## Bug fixes
+
+* We found and fixed an incorrect usage of the pinned-data API in `scripts/check-account-deletion.js`.
+* We also updated an incorrect client-side test in /assert/.
+* A minor bug in our CSS caching system caused some content to be unnecessarily recompiled. We've implemented a fix which should speed up loading time.
+
+# JamaicanMonkey release (3.9.0)
+
+## Goals
+
+Over time we've added many small configuration values to CryptPad's `config/config.js`.
+As the number of possible variations grew it became increasingly difficult to test the platform and to provide clear documentation.
+Ultimately this has made the platform more difficult to understand and consequently to host.
+
+This release features relatively few bug fixes or features.
+Instead, we took the calm period of the northern winter holidays to simplify the process of running a server and to begin working on some comprehensive documentation.
+
+## Update notes
+
+We have chosen to drop support for a number of parameters which we believe are not widely used.
+Read the following list carefully before updating, as you could be relying on behaviour which no longer exists.
+
+* Due to reasons of security and performance we have long advised that administrators make their instance available only over HTTPS provided by a reverse proxy such as nginx instead of loading TLS certificates via the node process itself. We have removed the option of serving HTTPS traffic directly from node by removing all support for HTTPS in this process.
+* Over the years many administrators have had to migrate their instance from one machine to another and have had difficulty identifying which directories were responsible for storing user data. We are beginning to migrate all user-generated data from the repository's root into the `data` directory as a new default, allowing for admins to migrate content by copying this single directory.
+  * for the time being we have not moved anything which is exposed directly over HTTPS since that complicates the upgrade process by requiring all configuration changes to be made simultaneously.
+  * the modifications we've made only affect the _default configuration_ provided by `config/config.example.js`, existing instances which have copied this file to `config/config.js` will not be affected.
+  * only the following values have been modified:
+    * `pinPath`
+    * `taskPath`
+    * `blobStagingPath`
+* We have modified the Dockerfile volume list to reflect the changes to these default paths. If you are using docker you will have to either:
+  * revert their removal or
+  * move the affected directories into the `data` directory and update your live config file to reflect their new location
+* Please note that we do our team does not use docker, that it was included in the main repository as a community contribution, and that we are not committed to supporting its configuration since we do not test it.
+  * Our official policy is to provide an up-to-date set of configuration files reflecting the state of our production installation on [CryptPad.fr](https://cryptpad.fr) using Debian, nginx, and systemd.
+  * we are actively working on improving our documentation for this particular configuration and we plan to close issues for other configurations as being outside of the project's scope.
+* We've updated our example nginx configuration file, located at `cryptpad/docs/example.nginx.conf`.
+  * in addition to a great number of comments, it now makes use of variables configure the domains referenced by the CSP headers which are required to take advantage of all of CryptPad's security features.
+* Prompted by warnings from recent nodejs versions we are updating our recommended version to v12.14.0 which is at the time of this writing the latest Long Term Support version.
+  * you may need to update to successfully launch your server.
+  * as always, we recommend using nvm to manage nodejs installation.
+* We have dropped support for a number of experimental features:
+  * replify (which allowed admins to modify their server at runtime using a REPL connected via a named socket)
+  * heapdump (which provided snapshots of the server's memory if it crashed)
+  * configurable RPC files as a configuration parameter
+* Finally, we've replaced a number of websocket configuration values (`websocketURL`, `websocketPath`, `useExternalWebsockets`, and `useSecureWebsockets`) with one optional value (`externalWebsocketURL`) in config.js
+  * if your instance is configured in the default manner you shouldn't actually need this value, as it will default to using `/cryptpad_websocket`.
+  * if you have configured your instance to serve all static assets over one domain and to host your API server on another, set `externalWebsocketURL` to `wss://your-domain.tld/cryptpad_websocket` or whatever URL will be correctly forwarded to your API server.
+
+Once you have reviewed your configuration files and ensured that they are correct, update to 3.9.0 with the following steps:
+
+1. take your server down
+2. get the latest code with `git pull origin master`
+3. install some required serverside dependency with `npm update`
+4. (optionally) update clientside dependencies with `bower update`
+5. bring your server back up
+
+## Features
+
+* We made some minor improvements to the process of redeeming invitation links for teams.
+  * invitation links can only be used once, so we remove the hash from the URL bar once you've landed on the redemption page so that reloading after redeeming doesn't indicate that you've used an expired link.
+* [One of our Finnish-speaking contributors](https://weblate.cryptpad.fr/user/ilo/) has translated a very large amount of the platform's text in the last few weeks, making Finnish our fifth most thoroughly translated language!
+
+## Bug fixes
+
+* We noticed and fixed a style regression which incorrectly removed the scrollbar from some textareas
+* We also found that it was possible to corrupt the href of an item in a team's drive if you first shared a pad with your team then transferred ownership, the link stored in the team's drive would have its domain concatenated together twice.
+* The type value of read-only pads displayed as search results in user and team drives was incorrect but is now correctly inferred.
+
+# IsolobodonPortoricensis release (3.8.0)
+
+We had some trouble finding an extinct animal whose name started with "I", and we had to resort to using a scientific name.
+Despite this long name, this was a very short release cycle.
+It's the last release of 2019, so we hope you like it!
+
+## Goals
+
+During this release cycle we prioritized the mitigation of some social abuse vectors and the ability to invite users to a team via a link.
+We have more improvements planned for both features, but we wanted to release what we had before the end of the year as our team is taking a little time off to recharge for 2020.
+
+## Update notes
+
+This is a small and simple release. We made a very minor improvement to the server which will require a restart, but everything will still work if you choose not to.
+
+Update from 3.7.0 to 3.8.0 with the following procedure:
+
+1. Take your server down
+2. Get the latest code with `git pull origin master`
+3. Bring your server back up
+
+Or if you've set up your admin interface:
+
+1. Pull the latest code
+2. Click the admin panel's "Flush cache" button
+
+## Features
+
+* We updated a bunch of styles to improve the platform's visual consistency:
+  * prettier buttons
+  * elimination of rounded corners on buttons, text inputs, and password inputs
+* We've fixed the default styles on embedded media while their content is loading
+* The button to add a user as a contact on their profile page now has a more prominent position at the top of the page
+* Users also have the option of muting other people via their profile page.
+  * these users will not know that you've muted them.
+  * you can review the complete list of all the people you've muted on your contacts page
+  * you can mute or unmute from the contacts page as well as their profile
+  * changes to a user's mute status propagate across pages in real-time
+* Some of our Finnish-speaking users have become contributors via our weblate instance (https://weblate.cryptpad.fr/)
+  * we're always looking for more translators to help more people protect their data, so don't hesitate to contact us if you want to help
+* Finally, it's now possible to invite users to a team by creating and sharing a personalized one-time-use link.
+  * team owners and admins can try it out via their teams' "Members" tab
+
+## Bug fixes
+
+* We've fixed a few subtle bugs where various contact status and our one-to-one chat functionality could get into a bad state.
+
+# HimalayanQuail release (3.7.0)
+
+## Goals
+
+As we are getting closer to the end of our CryptPad Teams project we planned to spend this release addressing some of the difficulties that users have reported regarding the usage of our newer social features.
+
+## Update notes
+
+This release includes an upgrade to a newer version of JQuery which mitigates a minor vulnerability which could have contributed to the presence of an XSS attack. We weren't using the affected methods in the library, but there's no harm in updating as it will protect against the vulnerability affecting user data in the future.
+
+We've also made some non-critical fixes to the server code, so you'll need to restart after pulling the latest code to take advantage of these improvements.
+
+Update to 3.7.0 from 3.6.0 using the normal update procedure:
+
+1. stop your server
+2. pull the latest code via git
+3. run `bower update`
+4. restart your server
+
+If you're using an up-to-date version of NPM you should find that running `npm update` prints a notice that one of the packages you've installed is seeking funding. Entering `npm fund` will print information about our OpenCollective funding campaign. If you're running a slightly older version of NPM and you wish to support CryptPad's development you can do so by visiting https://opencollective.com/cryptpad .
+
+## Features
+
+* Many users have contacted us via support tickets to ask how to add contacts on the platform. The easiest way is to share the link to your profile page. Once on that page registered users will be able to send a contact request which will appear in your notification tray. Because we believe you shouldn't have to read a manual to use CryptPad (and because we want to minimize how much time we spend answering support tickets) we've integrated this tip into the UI itself. Users that don't have any contacts on the platform will hopefully notice that the sharing menu's contacts tab now prompts them with this information, followed by a button to copy their profile page's URL to their clipboard.
+* We've made a lot of other small changes that we hope will have a big impact on the usability of the sharing menu:
+  * the "Link" section of the modal which includes the URL generated from your chosen access rights has been restyled so that the URL is displayed in a multiline textarea so that users can better see the URL changing as they play with the other controls
+  * both the "Contacts" and "Link" section include short, unintrusive hints about how passwords interact with the different sharing methods:
+    * when sharing via a URL we indicate that the recipient will need to enter a password, allowing for the URL to be sent over an insecure channel without leaking your document's content
+    * when sharing directly with a contact via their encrypted mailbox the password is transferred automatically, since it is assumed that you intend for the recipient to gain access and the platform provides a secure channel through which all the relevant information can be delivered
+    * this information is only included in cases when the document is protected with a password to limit the amount of information the user has to process to complete their task
+  * we include brief and dismissable warning within the menu which indicates that URLs provide non-revocable access to documents so that new users of the platform understand the consequences of sharing
+  * in general we've tried to make the appearance of the modal more appealing and intuitive so that users naturally discover and adopt the workflows which are the most conducive to their privacy and security
+* Our premium accounts platform authenticates that you are logged in on a given CryptPad instance by loading it in an iframe and requesting that it use one of your account's cryptographic keys to sign a message. Unfortunately, this process could be quite slow as it would load your CryptDrive and other information related to account, and some users reported that their browser timed out on this process. We've addressed this by loading only the account information required to prove your identity.
+* We've also included some changes to CryptPad's server to allow users to share quotas between multiple accounts, though we still have work to do to make this behaviour functional on the web client.
+* Spreadsheets now support password change!
+* Kanban boards now render long column titles in a much more intuitive way, wrapping the text instead of truncating it.
+* Our code editor now features support for Gantt charts in markdown mode via an improved Mermaidjs integration. We've also slowed down the rendering cycle so that updates are displayed once you stop typing for 400ms instead of 150ms, and improved the rendering methods so that all mermaid-generated charts are only redrawn if they have changed since the last time they were rendered. This results in a smoother reading experience while permitting other users to continue to edit the document.
+* Finally, after a review of the code responsible for sanitizing the markdown code which we render as HTML, we've decided to remove SVG tags from our sanitizer's filter. This means that you can write SVG markup in the input field and see it rendered, in case you're into that kind of thing.
+
+## Bug fixes
+
+* It seems our "contacts" app broke along with the 3.5.0 release and nobody reported it. The regression was introduced when we made some changes to the teams chat integration. We've addressed the issue so that you can once again use the contacts app to chat directly with friends.
+* We've found and fixed a "memory puddle" (a non-critical memory leak which was automatically mopped up every now and then). The fix probably won't have much noticeable impact but the server is now a little bit more correct
+* We stumbled across a bug which wiped out the contents of a Kanban board and caused the application to crash if you navigated to the affected version of the document in history mode. If you notice that one of your documents was affected please contact us and we'll write a guide instructing you how to recover your content.
+* We've found a few bugs lurking in our server which could have caused the amount of data stored in users' drives to be calculated incorrectly under very unlikely circumstances. We've fixed the issue and addressed a number of similar asynchrony-related code paths which should mitigate similar issues in the future.
+* Lastly, we spotted some flaws in the code responsible for encrypting pad credentials in shared folders and teams such that viewers don't automatically gain access to the editing keys of a document when they should only have view access. There weren't any access control vulnerabilities, but an error was thrown under rare circumstances which could prevent affected users' drives from loading. We've guarded against the cause and made it such that any affected users will automatically repair their damaged drives.
+
+# GoldenFrog release (3.6.0)
+
+## Goals
+
+We're following up our last few releases of major core developments with an effort to improve reliability in some unstable areas and make some superficial tweaks to improve usability of some critical interfaces.
+
+## Update notes
+
+Update to 3.6.0 from 3.5.0 using the normal update procedure:
+
+1. stop your server
+2. pull the latest code via git
+3. run `bower update`
+4. restart your server
+
+## Features
+
+* We've introduced a word-count feature in our rich text editor.
+* The "share modal" which is accessible from both the "right-click menu" in the drive and the sharing button in the toolbar has been redesigned:
+  * different means of sharing access to documents have been split into different tabs to present users with less information to process
+  * each sharing method has an associated icon to make their actions easier to recognize at a glance
+  * various UI elements have been restyled to make their purpose and importance more obvious
+    * cancel buttons have a grey border to draw less attention
+    * OK buttons have a blue or grey background depending on whether they are active
+    * secondary buttons like "preview" have only a thin blue border so that they don't draw attention away from the primary button
+    * read-only text fields have a subtler appearance since they are shown primarily for the purpose of previewing your action
+    * text input fields (such as search) have a light background to suggest that you can use them
+* We've made a minor adjustment to some of our styles for small screen to detect when a screen is very short in addition to when it is very narrow. As a result it should be somewhat easier to use on-screen keyboards.
+
+## Bug fixes
+
+* We found and fixed a subtle race condition which caused teams' quotas to be calculated incorrectly in certain circumstances.
+* A minor bug in our login process caused users with premium accounts to incorrectly see an entry in their user menu as linking to our 'pricing' page instead of their 'subscription' management tools. This has since been fixed.
+* We noticed that some of the rendered messages in the history mode of the notifications panel could fail to display text for some message types. These incorrect messages will be hidden from view wherever it is impossible to decide what should be displayed. We plan to address the issue in a deeper way in the near future.
+* We've become aware of some odd behaviour in long-lived sessions where tabs seem to lose their connection to the sharedWorker which is common to all tabs open in a particular browser session. As far as we can tell the bug only affects Firefox browser. Unfortunately, debugging sharedWorkers in Firefox has been broken for a number of major versions, so we haven't been able to determine the cause of the issue. Until we're able to determine the underlying cause we've added extra checks to detect when particular features become isolated from the worker, where previously we assumed that if the worker was connected to the server then everything was behaving correctly. We recommend that you reload the tab if you notice that aspects of your shared folders or drives (for users or teams) display a read-only warning while your other tabs are behaving normally.
+
 # FalklandWolf release (3.5.0)
 
 ## Goals

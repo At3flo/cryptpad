@@ -147,6 +147,7 @@
                         self.drake = self.dragula(self.boardContainer, {
                             moves: function (el, source, handle, sibling) {
                                 if (self.options.readOnly) { return false; }
+                                if (el.classList.contains('new-item')) { return false; }
                                 return handle.classList.contains('kanban-item');
                             },
                             accepts: function (el, target, source, sibling) {
@@ -349,7 +350,7 @@
                         titleBoard = document.createElement('div');
                         titleBoard.classList.add('kanban-title-board');
                         titleBoard.innerHTML = board.title;
-                        titleBoard.setAttribute('title', board.title);
+                        //titleBoard.setAttribute('title', board.title);
                         titleBoard.clickfn = board.boardTitleClick;
                         __onboardTitleClickHandler(titleBoard);
                         headerBoard.appendChild(titleBoard);

@@ -98,6 +98,7 @@ define([
     };
     var mkHelpMenu = function (framework) {
         var $codeMirrorContainer = $('#cp-app-code-container');
+        $codeMirrorContainer.prepend(framework._.sfCommon.getBurnAfterReadingWarning());
         var helpMenu = framework._.sfCommon.createHelpMenu(['text', 'code']);
         $codeMirrorContainer.prepend(helpMenu.menu);
 
@@ -131,7 +132,7 @@ define([
             if (['markdown', 'gfm'].indexOf(CodeMirror.highlightMode) === -1) { return; }
             if (!$previewButton.is('.cp-toolbar-button-active')) { return; }
             forceDrawPreview();
-        }, 150);
+        }, 400);
 
         var previewTo;
         $previewButton.click(function () {

@@ -55,6 +55,10 @@ define([
         return $('button.ok').last();
     };
 
+    UI.removeModals = function () {
+        $('div.alertify').remove();
+    };
+
     var listenForKeys = UI.listenForKeys = function (yes, no, el) {
         var handler = function (e) {
             e.stopPropagation();
@@ -127,6 +131,18 @@ define([
         return input;
     };
 
+    dialog.selectableArea = function (value, opt) {
+        var attrs = merge({
+            readonly: 'readonly',
+        }, opt);
+
+        var input = h('textarea', attrs);
+        $(input).val(value).click(function () {
+            input.select();
+        });
+        return input;
+    };
+
     dialog.okButton = function (content, classString) {
         var sel = typeof(classString) === 'string'? 'button.ok.' + classString:'button.ok.primary';
         return h(sel, { tabindex: '2', }, content || Messages.okButton);
@@ -146,7 +162,18 @@ define([
             type: 'text',
             'class': 'cp-text-input',
         }, opt);
-        return h('input', attrs);
+        return h('p.msg', h('input', attrs));
+    };
+
+    dialog.textTypeInput = function (dropdown) {
+        var attrs = {
+            type: 'text',
+            'class': 'cp-text-type-input',
+        };
+        return h('p.msg.cp-alertify-type-container', h('div.cp-alertify-type', [
+            h('input', attrs),
+            dropdown // must be a "span"
+        ]));
     };
 
     dialog.nav = function (content) {
@@ -174,6 +201,7 @@ define([
             });
         };
         return $frame.click(function (e) {
+            $frame.find('.cp-dropdown-content').hide();
             e.stopPropagation();
         })[0];
     };
@@ -187,22 +215,34 @@ define([
     dialog.tabs = function (tabs) {
         var contents = [];
         var titles = [];
-        tabs.forEach(function (tab) {
+        var active = 0;
+        tabs.forEach(function (tab, i) {
             if (!tab.content || !tab.title) { return; }
             var content = h('div.alertify-tabs-content', tab.content);
             var title = h('span.alertify-tabs-title', tab.title);
+            if (tab.icon) {
+                var icon = h('i', {class: tab.icon});
+                $(title).prepend(' ').prepend(icon);
+            }
             $(title).click(function () {
+                var old = tabs[active];
+                if (old.onHide) { old.onHide(); }
                 titles.forEach(function (t) { $(t).removeClass('alertify-tabs-active'); });
                 contents.forEach(function (c) { $(c).removeClass('alertify-tabs-content-active'); });
+                if (tab.onShow) {
+                    tab.onShow();
+                }
                 $(title).addClass('alertify-tabs-active');
                 $(content).addClass('alertify-tabs-content-active');
+                active = i;
             });
             titles.push(title);
             contents.push(content);
+            if (tab.active) { active = i; }
         });
         if (contents.length) {
-            $(contents[0]).addClass('alertify-tabs-content-active');
-            $(titles[0]).addClass('alertify-tabs-active');
+            $(contents[active]).addClass('alertify-tabs-content-active');
+            $(titles[active]).addClass('alertify-tabs-active');
         }
         return h('div.alertify-tabs', [
             h('div.alertify-tabs-titles', titles),
@@ -339,12 +379,14 @@ define([
 
     dialog.getButtons = function (buttons, onClose) {
         if (!Array.isArray(buttons)) { return void console.error('Not an array'); }
+        if (!buttons.length) { return; }
         var navs = [];
         buttons.forEach(function (b) {
             if (!b.name || !b.onClick) { return; }
             var button = h('button', { tabindex: '1', 'class': b.className || '' }, b.name);
             $(button).click(function () {
-                b.onClick();
+                var noClose = b.onClick();
+                if (noClose) { return; }
                 var $modal = $(button).parents('.alertify').first();
                 if ($modal.length && $modal[0].closeModal) {
                     $modal[0].closeModal(function () {
@@ -455,8 +497,9 @@ define([
         cb = cb || function () {};
         opt = opt || {};
 
-        var inputBlock = opt.password ? UI.passwordInput() : dialog.textInput();
-        var input = opt.password ? $(inputBlock).find('input')[0] : inputBlock;
+        var inputBlock = opt.password ? UI.passwordInput() :
+                            (opt.typeInput ? dialog.textTypeInput(opt.typeInput) : dialog.textInput());
+        var input = $(inputBlock).is('input') ? inputBlock : $(inputBlock).find('input')[0];
         input.value = typeof(def) === 'string'? def: '';
 
         var message;
@@ -573,6 +616,7 @@ define([
         }];
         var modal = dialog.customModal(content, {buttons: buttons});
         UI.openCustomModal(modal);
+        return modal;
     };
 
     UI.log = function (msg) {
@@ -590,38 +634,38 @@ define([
         }, opts);
 
         var input = h('input.cp-password-input', attributes);
-        var reveal = UI.createCheckbox('cp-password-reveal', Messages.password_show);
         var eye = h('span.fa.fa-eye.cp-password-reveal');
 
-        $(reveal).find('input').on('change', function () {
-            if($(this).is(':checked')) {
-                $(input).prop('type', 'text');
-                $(input).focus();
-                return;
-            }
-            $(input).prop('type', 'password');
-            $(input).focus();
-        });
+        var $eye = $(eye);
+        var $input = $(input);
 
-        $(eye).mousedown(function () {
-            $(input).prop('type', 'text');
-            $(input).focus();
-        }).mouseup(function(){
-            $(input).prop('type', 'password');
-            $(input).focus();
-        }).mouseout(function(){
-            $(input).prop('type', 'password');
-            $(input).focus();
-        });
         if (displayEye) {
-            $(reveal).hide();
+            $eye.mousedown(function () {
+                $input.prop('type', 'text');
+                $input.focus();
+            }).mouseup(function(){
+                $input.prop('type', 'password');
+                $input.focus();
+            }).mouseout(function(){
+                $input.prop('type', 'password');
+                $input.focus();
+            });
         } else {
-            $(eye).hide();
+            $eye.click(function () {
+                if ($eye.hasClass('fa-eye')) {
+                    $input.prop('type', 'text');
+                    $input.focus();
+                    $eye.removeClass('fa-eye').addClass('fa-eye-slash');
+                    return;
+                }
+                $input.prop('type', 'password');
+                $input.focus();
+                $eye.removeClass('fa-eye-slash').addClass('fa-eye');
+            });
         }
 
         return h('span.cp-password-container', [
             input,
-            reveal,
             eye
         ]);
     };
@@ -664,12 +708,6 @@ define([
 
     var LOADING = 'cp-loading';
 
-    /*var getRandomTip = function () {
-        if (!Messages.tips || !Object.keys(Messages.tips).length) { return ''; }
-        var keys = Object.keys(Messages.tips);
-        var rdm = Math.floor(Math.random() * keys.length);
-        return Messages.tips[keys[rdm]];
-    };*/
     var loading = {
         error: false,
         driveState: 0,
@@ -679,7 +717,7 @@ define([
         config = config || {};
         var loadingText = config.loadingText;
         var todo = function () {
-            var $loading = $('#' + LOADING); //.show();
+            var $loading = $('#' + LOADING);
             $loading.css('display', '');
             $loading.removeClass('cp-loading-hidden');
             $('.cp-loading-spinner-container').show();
@@ -942,19 +980,21 @@ define([
         $.extend(markOpts, opts.mark || {});
 
         var input = h('input', inputOpts);
+        var $input = $(input);
         var mark = h('span.cp-checkmark-mark', markOpts);
+        var $mark = $(mark);
         var label = h('span.cp-checkmark-label', labelTxt);
 
-        $(mark).keydown(function (e) {
+        $mark.keydown(function (e) {
             if (e.which === 32) {
                 e.stopPropagation();
                 e.preventDefault();
-                $(input).prop('checked', !$(input).is(':checked'));
-                $(input).change();
+                $input.prop('checked', !$input.is(':checked'));
+                $input.change();
             }
         });
 
-        $(input).change(function () { $(mark).focus(); });
+        $input.change(function () { $mark.focus(); });
 
         return h('label.cp-checkmark', labelOpts, [
             input,
@@ -991,6 +1031,7 @@ define([
             if (e.which === 32) {
                 e.stopPropagation();
                 e.preventDefault();
+                if ($(input).is(':checked')) { return; }
                 $(input).prop('checked', !$(input).is(':checked'));
                 $(input).change();
             }
@@ -1027,28 +1068,30 @@ define([
             setHTML(h('div.cp-corner-footer'), footer)
         ]);
 
+        var $popup = $(popup);
+
         $(minimize).click(function () {
-            $(popup).addClass('cp-minimized');
+            $popup.addClass('cp-minimized');
         });
         $(maximize).click(function () {
-            $(popup).removeClass('cp-minimized');
+            $popup.removeClass('cp-minimized');
         });
 
         if (opts.hidden) {
-            $(popup).addClass('cp-minimized');
+            $popup.addClass('cp-minimized');
         }
         if (opts.big) {
-            $(popup).addClass('cp-corner-big');
+            $popup.addClass('cp-corner-big');
         }
 
         var hide = function () {
-            $(popup).hide();
+            $popup.hide();
         };
         var show = function () {
-            $(popup).show();
+            $popup.show();
         };
         var deletePopup = function () {
-            $(popup).remove();
+            $popup.remove();
         };
 
         $('body').append(popup);

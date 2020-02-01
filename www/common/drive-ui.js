@@ -79,7 +79,7 @@ define([
     var faColor = 'cptools-palette';
     var faTrash = 'fa-trash';
     var faDelete = 'fa-eraser';
-    var faProperties = 'fa-database';
+    var faProperties = 'fa-info-circle';
     var faTags = 'fa-hashtag';
     var faUploadFiles = 'cptools-file-upload';
     var faUploadFolder = 'cptools-folder-upload';
@@ -2559,8 +2559,6 @@ define([
             var roParsed = Hash.parsePadUrl(data.roHref) || {};
             if (!parsed.hash && !roParsed.hash) { return void console.error("Invalid href: "+(data.href || data.roHref)); }
             var friends = common.getFriends();
-            var teams = common.getMetadataMgr().getPrivateData().teams;
-            var _wide = Object.keys(friends).length || Object.keys(teams).length;
             var ro = folders[id] && folders[id].version >= 2;
             var modal = UIElements.createShareModal({
                 teamId: APP.team,
@@ -2580,11 +2578,8 @@ define([
             // can't share the read-only URL and we don't have access to the edit one.
             // We should hide the share button.
             if (!modal) { return; }
-            modal = UI.dialog.tabs(modal);
             $shareBlock.click(function () {
-                UI.openCustomModal(modal, {
-                    wide: _wide
-                });
+                UI.openCustomModal(modal);
             });
             $container.append($shareBlock);
         };
@@ -3013,7 +3008,7 @@ define([
                 r.paths.forEach(function (path) {
                     if (!r.inSharedFolder &&
                         APP.hideDuplicateOwned && manager.isDuplicateOwned(path)) { return; }
-                    var href = r.data.href;
+                    var href = r.data.href || r.data.roHref;
                     var parsed = Hash.parsePadUrl(href);
                     var $table = $('<table>');
                     var $icon = $('<td>', {'rowspan': '3', 'class': 'cp-app-drive-search-icon'});
@@ -4053,8 +4048,6 @@ define([
                 el = manager.find(paths[0].path);
                 var parsed, modal;
                 var friends = common.getFriends();
-                var teams = common.getMetadataMgr().getPrivateData().teams;
-                var _wide = Object.keys(friends).length || Object.keys(teams).length;
 
                 if (manager.isFolder(el) && !manager.isSharedFolder(el)) { // Folder
                     // if folder is inside SF
@@ -4119,10 +4112,7 @@ define([
                     };
                     modal = padType === 'file' ? UIElements.createFileShareModal(padData)
                                             : UIElements.createShareModal(padData);
-                    modal = UI.dialog.tabs(modal);
-                    UI.openCustomModal(modal, {
-                        wide: _wide
-                    });
+                    UI.openCustomModal(modal);
                 }
             }
             else if ($this.hasClass('cp-app-drive-context-savelocal')) {
@@ -4197,7 +4187,7 @@ define([
                 }
                 getProperties(el, function (e, $prop) {
                     if (e) { return void logError(e); }
-                    UI.alert($prop[0], undefined, true);
+                    UI.openCustomModal($prop[0]);
                 });
             }
             else if ($this.hasClass("cp-app-drive-context-hashtag")) {

@@ -96,6 +96,7 @@ define([
     funcs.createMarkdownToolbar = callWithCommon(UIElements.createMarkdownToolbar);
     funcs.createHelpMenu = callWithCommon(UIElements.createHelpMenu);
     funcs.getPadCreationScreen = callWithCommon(UIElements.getPadCreationScreen);
+    funcs.getBurnAfterReadingWarning = callWithCommon(UIElements.getBurnAfterReadingWarning);
     funcs.createNewPadModal = callWithCommon(UIElements.createNewPadModal);
     funcs.onServerError = callWithCommon(UIElements.onServerError);
     funcs.importMediaTagMenu = callWithCommon(UIElements.importMediaTagMenu);
@@ -300,6 +301,13 @@ define([
             }
             // If we display the pad creation screen, it will handle deleted pads directly
             funcs.getPadCreationScreen(c, config, waitFor());
+            return;
+        }
+        if (priv.burnAfterReading) {
+            UIElements.displayBurnAfterReadingPage(funcs, waitFor(function () {
+                UI.addLoadingScreen();
+                ctx.sframeChan.event('EV_BURN_AFTER_READING');
+            }));
         }
     };
     funcs.createPad = function (cfg, cb) {
@@ -346,7 +354,7 @@ define([
             key: key,
             href: href
         }, function (err, res) {
-            cb (err || res.error, res.data);
+            cb(err || res.error, res && res.data);
         });
     };
     funcs.setPadAttribute = function (key, value, cb, href) {
@@ -595,8 +603,8 @@ define([
 
             UI.addTooltips();
 
-            ctx.sframeChan.on("EV_PAD_PASSWORD", function () {
-                UIElements.displayPasswordPrompt(funcs);
+            ctx.sframeChan.on("EV_PAD_PASSWORD", function (cfg) {
+                UIElements.displayPasswordPrompt(funcs, cfg);
             });
 
             ctx.sframeChan.on("EV_PAD_PASSWORD_ERROR", function () {

@@ -14,11 +14,13 @@ define([
     '/customize/application_config.js',
     '/customize/pages.js',
     '/bower_components/nthen/index.js',
+    '/common/invitation.js',
+
     'css!/customize/fonts/cptools/style.css',
     '/bower_components/croppie/croppie.min.js',
     'css!/bower_components/croppie/croppie.css',
 ], function ($, Config, Util, Hash, Language, UI, Constants, Feedback, h, MediaTag, Clipboard,
-             Messages, AppConfig, Pages, NThen) {
+             Messages, AppConfig, Pages, NThen, InviteInner) {
     var UIElements = {};
 
     // Configure MediaTags to use our local viewer
@@ -64,8 +66,14 @@ define([
             $files.on('change', function (e) {
                 var file = e.target.files[0];
                 var reader = new FileReader();
-                reader.onload = function (e) { f(e.target.result, file); };
-                reader.readAsText(file, type);
+                var parsed = file && file.name && /.+\.([^.]+)$/.exec(file.name);
+                var ext = parsed && parsed[1];
+                reader.onload = function (e) { f(e.target.result, file, ext); };
+                if (cfg && cfg.binary && cfg.binary.indexOf(ext) !== -1) {
+                   reader.readAsArrayBuffer(file, type);
+                } else {
+                   reader.readAsText(file, type);
+               }
             });
         };
     };
@@ -147,6 +155,7 @@ define([
                         : Messages.owner_removeText;
             var removeCol = UIElements.getUserGrid(msg, {
                 common: common,
+                large: true,
                 data: _owners,
                 noFilter: true
             }, function () {
@@ -238,6 +247,7 @@ define([
             });
             var addCol = UIElements.getUserGrid(Messages.owner_addText, {
                 common: common,
+                large: true,
                 data: _friends
             }, function () {
                 //console.log(arguments);
@@ -254,6 +264,7 @@ define([
             });
             var teamsList = UIElements.getUserGrid(Messages.owner_addTeamText, {
                 common: common,
+                large: true,
                 noFilter: true,
                 data: teamsData
             }, function () {});
@@ -551,9 +562,10 @@ define([
                     $d.append(password);
                 }
 
-                if (!data.noEditPassword && owned && parsed.type !== "sheet") { // FIXME SHEET fix password change for sheets
+                if (!data.noEditPassword && owned) { // FIXME SHEET fix password change for sheets
                     var sframeChan = common.getSframeChannel();
 
+                    var isOO = parsed.type === 'sheet';
                     var isFile = parsed.hashData.type === 'file';
                     var isSharedFolder = parsed.type === 'drive';
 
@@ -570,7 +582,7 @@ define([
                         style: 'flex: 1;'
                     });
                     var passwordOk = h('button', Messages.properties_changePasswordButton);
-                    var changePass = h('span.cp-password-container', [
+                    var changePass = h('span.cp-password-change-container', [
                         newPassword,
                         passwordOk
                     ]);
@@ -586,7 +598,8 @@ define([
                         UI.confirm(changePwConfirm, function (yes) {
                             if (!yes) { pLocked = false; return; }
                             $(passwordOk).html('').append(h('span.fa.fa-spinner.fa-spin', {style: 'margin-left: 0'}));
-                            var q = isFile ? 'Q_BLOB_PASSWORD_CHANGE' : 'Q_PAD_PASSWORD_CHANGE';
+                            var q = isFile ? 'Q_BLOB_PASSWORD_CHANGE' :
+                                        (isOO ? 'Q_OO_PASSWORD_CHANGE' : 'Q_PAD_PASSWORD_CHANGE');
 
                             // If this is a file password change, register to the upload events:
                             // * if there is a pending upload, ask if we shoudl interrupt
@@ -684,26 +697,15 @@ define([
         }
 
         if (data.tags && Array.isArray(data.tags)) {
-            $('<label>', {'for': 'cp-app-prop-tags'}).text(Messages.fm_prop_tagsList).appendTo($d);
-            $d.append(UI.dialog.selectable(data.tags.join(', '), {
-                id: 'cp-app-prop-tags',
-            }));
+            $d.append(h('div.cp-app-prop', [Messages.fm_prop_tagsList, h('br'), h('span.cp-app-prop-content', data.tags.join(', '))]));
         }
 
         if (data.ctime) {
-            $('<label>', {'for': 'cp-app-prop-ctime'}).text(Messages.fm_creation)
-                .appendTo($d);
-            $d.append(UI.dialog.selectable(new Date(data.ctime).toLocaleString(), {
-                id: 'cp-app-prop-ctime',
-            }));
+            $d.append(h('div.cp-app-prop', [Messages.fm_creation,  h('br'), h('span.cp-app-prop-content', new Date(data.ctime).toLocaleString())]));
         }
 
         if (data.atime) {
-            $('<label>', {'for': 'cp-app-prop-atime'}).text(Messages.fm_lastAccess)
-                .appendTo($d);
-            $d.append(UI.dialog.selectable(new Date(data.atime).toLocaleString(), {
-                id: 'cp-app-prop-atime',
-            }));
+            $d.append(h('div.cp-app-prop', [Messages.fm_lastAccess,  h('br'), h('span.cp-app-prop-content', new Date(data.atime).toLocaleString())]));
         }
 
         if (common.isLoggedIn()) {
@@ -727,15 +729,7 @@ define([
                 var KB = Util.bytesToKilobytes(bytes);
 
                 var formatted = Messages._getKey('formattedKB', [KB]);
-                $('<br>').appendTo($d);
-
-                $('<label>', {
-                    'for': 'cp-app-prop-size'
-                }).text(Messages.fc_sizeInKilobytes).appendTo($d);
-
-                $d.append(UI.dialog.selectable(formatted, {
-                    id: 'cp-app-prop-size',
-                }));
+                $d.append(h('div.cp-app-prop', [Messages.upload_size, h('br'), h('span.cp-app-prop-content', formatted)]));
 
         if (data.sharedFolder && false) {
             $('<label>', {'for': 'cp-app-prop-channel'}).text('Channel ID').appendTo($d);
@@ -756,12 +750,22 @@ define([
     UIElements.getProperties = function (common, data, cb) {
         var c1;
         var c2;
+        var button = [{
+            className: 'primary',
+            name: Messages.okButton,
+            onClick: function () {},
+            keys: [13]
+        }];
         NThen(function (waitFor) {
             getPadProperties(common, data, waitFor(function (e, c) {
-                c1 = c[0];
+                c1 = UI.dialog.customModal(c[0], {
+                    buttons: button
+                });
             }));
             getRightsProperties(common, data, waitFor(function (e, c) {
-                c2 = c[0];
+                c2 = UI.dialog.customModal(c[0], {
+                    buttons: button
+                });
             }));
         }).nThen(function () {
             var tabs = UI.dialog.tabs([{
@@ -801,18 +805,14 @@ define([
 
         var noOthers = icons.length === 0 ? '.cp-usergrid-empty' : '';
 
-        var buttonSelect = h('button', Messages.share_selectAll);
-        var buttonDeselect = h('button', Messages.share_deselectAll);
         var inputFilter = h('input', {
             placeholder: Messages.share_filterFriend
         });
 
-        var div = h('div.cp-usergrid-container' + noOthers, [
-            h('label', label),
+        var div = h('div.cp-usergrid-container' + noOthers + (config.large?'.large':''), [
+            label ? h('label', label) : undefined,
             h('div.cp-usergrid-filter', (config.noFilter || config.noSelect) ? undefined : [
-                inputFilter,
-                buttonSelect,
-                buttonDeselect
+                inputFilter
             ]),
         ]);
         var $div = $(div);
@@ -825,22 +825,7 @@ define([
                 $div.find('.cp-usergrid-user:not(.cp-selected):not([data-name*="'+name+'"])').hide();
             }
         };
-
         $(inputFilter).on('keydown keyup change', redraw);
-
-        $(buttonSelect).click(function () {
-            $div.find('.cp-usergrid-user:not(.cp-selected):visible').addClass('cp-selected');
-            onSelect();
-        });
-        $(buttonDeselect).click(function () {
-            $div.find('.cp-usergrid-user.cp-selected').removeClass('cp-selected').each(function (i, el) {
-                var order = $(el).attr('data-order');
-                if (!order) { return; }
-                $(el).attr('style', 'order:'+order);
-            });
-            redraw();
-            onSelect();
-        });
 
         $(div).append(h('div.cp-usergrid-grid', icons));
         if (!config.noSelect) {
@@ -864,7 +849,7 @@ define([
     };
 
 
-    var createShareWithFriends = function (config, onShare) {
+    var createShareWithFriends = function (config, onShare, linkGetter) {
         var common = config.common;
         var sframeChan = common.getSframeChannel();
         var title = config.title;
@@ -877,7 +862,7 @@ define([
             return friends[c].curvePublic.slice(0,8);
         });
 
-        var div = h('div.cp-share-column.contains-nav');
+        var div = h('div.contains-nav');
         var $div = $(div);
         // Replace "copy link" by "share with friends" if at least one friend is selected
         // Also create the "share with friends" button if it doesn't exist
@@ -902,7 +887,8 @@ define([
         var friendsList = UIElements.getUserGrid(Messages.share_linkFriends, {
             common: common,
             data: friends,
-            noFilter: false
+            noFilter: false,
+            large: true
         }, refreshButtons);
         var friendDiv = friendsList.div;
         $div.append(friendDiv);
@@ -928,71 +914,90 @@ define([
         var teamsList = UIElements.getUserGrid(Messages.share_linkTeam, {
             common: common,
             noFilter: true,
+            large: true,
             data: teams
         }, refreshButtons);
         $div.append(teamsList.div);
 
-        var shareButtons = [{
+        var shareButton = {
             className: 'primary cp-share-with-friends',
             name: Messages.share_withFriends,
             onClick: function () {
-                var href = Hash.getRelativeHref($('#cp-share-link-preview').val());
-                var $friends = $div.find('.cp-usergrid-user.cp-selected');
-                $friends.each(function (i, el) {
-                    var curve = $(el).attr('data-curve');
-                    // Check if the selected element is a friend or a team
-                    if (curve) { // Friend
-                        if (!curve || !friends[curve]) { return; }
-                        var friend = friends[curve];
-                        if (!friend.notifications || !friend.curvePublic) { return; }
-                        common.mailbox.sendTo("SHARE_PAD", {
-                            href: href,
-                            password: config.password,
-                            isTemplate: config.isTemplate,
-                            name: myName,
-                            title: title
-                        }, {
-                            channel: friend.notifications,
-                            curvePublic: friend.curvePublic
-                        });
+                var href;
+                NThen(function (waitFor) {
+                    var w = waitFor();
+                    // linkGetter can be async if this is a burn after reading URL
+                    var res = linkGetter({}, function (url) {
+                        if (!url) {
+                            waitFor.abort();
+                            return;
+                        }
+                        href = url;
+                        setTimeout(w);
+                    });
+                    if (res && /^http/.test(res)) {
+                        href = Hash.getRelativeHref(res);
+                        setTimeout(w);
                         return;
                     }
-                    // Team
-                    var ed = $(el).attr('data-ed');
-                    var team = teams[ed];
-                    if (!team) { return; }
-                    sframeChan.query('Q_STORE_IN_TEAM', {
-                        href: href,
-                        password: config.password,
-                        path: config.isTemplate ? ['template'] : undefined,
-                        title: title,
-                        teamId: team.id
-                    }, function (err) {
-                        if (err) { return void console.error(err); }
+                }).nThen(function () {
+                    var $friends = $div.find('.cp-usergrid-user.cp-selected');
+                    $friends.each(function (i, el) {
+                        var curve = $(el).attr('data-curve');
+                        // Check if the selected element is a friend or a team
+                        if (curve) { // Friend
+                            if (!curve || !friends[curve]) { return; }
+                            var friend = friends[curve];
+                            if (!friend.notifications || !friend.curvePublic) { return; }
+                            common.mailbox.sendTo("SHARE_PAD", {
+                                href: href,
+                                password: config.password,
+                                isTemplate: config.isTemplate,
+                                name: myName,
+                                title: title
+                            }, {
+                                channel: friend.notifications,
+                                curvePublic: friend.curvePublic
+                            });
+                            return;
+                        }
+                        // Team
+                        var ed = $(el).attr('data-ed');
+                        var team = teams[ed];
+                        if (!team) { return; }
+                        sframeChan.query('Q_STORE_IN_TEAM', {
+                            href: href,
+                            password: config.password,
+                            path: config.isTemplate ? ['template'] : undefined,
+                            title: title,
+                            teamId: team.id
+                        }, function (err) {
+                            if (err) { return void console.error(err); }
+                        });
                     });
-                });
 
-                UI.findCancelButton().click();
+                    UI.findCancelButton().click();
 
-                // Update the "recently shared with" array:
-                // Get the selected curves
-                var curves = $friends.toArray().map(function (el) {
-                    return ($(el).attr('data-curve') || '').slice(0,8);
-                }).filter(function (x) { return x; });
-                // Prepend them to the "order" array
-                Array.prototype.unshift.apply(order, curves);
-                order = Util.deduplicateString(order);
-                // Make sure we don't have "old" friends and save
-                order = order.filter(function (curve) {
-                    return smallCurves.indexOf(curve) !== -1;
+                    // Update the "recently shared with" array:
+                    // Get the selected curves
+                    var curves = $friends.toArray().map(function (el) {
+                        return ($(el).attr('data-curve') || '').slice(0,8);
+                    }).filter(function (x) { return x; });
+                    // Prepend them to the "order" array
+                    Array.prototype.unshift.apply(order, curves);
+                    order = Util.deduplicateString(order);
+                    // Make sure we don't have "old" friends and save
+                    order = order.filter(function (curve) {
+                        return smallCurves.indexOf(curve) !== -1;
+                    });
+                    common.setAttribute(['general', 'share-friends'], order);
+                    if (onShare) {
+                        onShare.fire();
+                    }
                 });
-                common.setAttribute(['general', 'share-friends'], order);
-                if (onShare) {
-                    onShare.fire();
-                }
             },
             keys: [13]
-        }];
+        };
 
         common.getAttribute(['general', 'share-friends'], function (err, val) {
             order = val || [];
@@ -1017,12 +1022,96 @@ define([
             // Display them
             $(friendDiv).find('.cp-usergrid-grid').detach();
             $(friendDiv).append(h('div.cp-usergrid-grid', others));
-            $div.append(UI.dialog.getButtons(shareButtons, config.onClose));
             refreshButtons();
         });
-        return div;
+        return {
+            content: div,
+            buttons: [shareButton]
+        };
     };
 
+    var noContactsMessage = function(common){
+        var metadataMgr = common.getMetadataMgr();
+        var data = metadataMgr.getUserData();
+        var origin = metadataMgr.getPrivateData().origin;
+        if (common.isLoggedIn()) {
+            return {
+                content: h('p', Messages.share_noContactsLoggedIn),
+                buttons: [{
+                    className: 'secondary',
+                    name: Messages.share_copyProfileLink,
+                    onClick: function () {
+                        var profile = data.profile ? (origin + '/profile/#' + data.profile) : '';
+                        var success = Clipboard.copy(profile);
+                        if (success) { UI.log(Messages.shareSuccess); }
+                    },
+                    keys: [13]
+                  }]
+            };
+        } else {
+            return {
+                content: h('p', Messages.share_noContactsNotLoggedIn),
+                buttons: [{
+                    className: 'secondary',
+                    name: Messages.login_register,
+                    onClick: function () {
+                        common.setLoginRedirect(function () {
+                            common.gotoURL('/register/');
+                        });
+                    }
+                  }, {
+                    className: 'secondary',
+                    name: Messages.login_login,
+                    onClick: function () {
+                        common.setLoginRedirect(function () {
+                            common.gotoURL('/login/');
+                        });
+                    }
+                  }
+                  ]
+            };
+        }
+    };
+
+    var makeBurnAfterReadingUrl = function (common, href, channel, cb) {
+        var keyPair = Hash.generateSignPair();
+        var parsed = Hash.parsePadUrl(href);
+        var newHref = parsed.getUrl({
+            ownerKey: keyPair.safeSignKey
+        });
+        var sframeChan = common.getSframeChannel();
+        var rtChannel;
+        NThen(function (waitFor) {
+            if (parsed.type !== "sheet") { return; }
+            common.getPadAttribute('rtChannel', waitFor(function (err, chan) {
+                rtChannel = chan;
+            }));
+        }).nThen(function (waitFor) {
+            sframeChan.query('Q_SET_PAD_METADATA', {
+                channel: channel,
+                command: 'ADD_OWNERS',
+                value: [keyPair.validateKey]
+            }, waitFor(function (err) {
+                if (err) {
+                    waitFor.abort();
+                    UI.warn(Messages.error);
+                }
+            }));
+            if (rtChannel) {
+                sframeChan.query('Q_SET_PAD_METADATA', {
+                    channel: rtChannel,
+                    command: 'ADD_OWNERS',
+                    value: [keyPair.validateKey]
+                }, waitFor(function (err) {
+                    if (err) {
+                        console.error(err);
+                    }
+                }));
+            }
+        }).nThen(function () {
+            cb(newHref);
+        });
+    };
     UIElements.createShareModal = function (config) {
         var origin = config.origin;
         var pathname = config.pathname;
@@ -1031,134 +1120,263 @@ define([
 
         if (!hashes || (!hashes.editHash && !hashes.viewHash)) { return; }
 
-        // Share link tab
-        var hasFriends = Object.keys(config.friends || {}).length !== 0;
-        var onFriendShare = Util.mkEvent();
-        var friendsList = hasFriends ? createShareWithFriends(config, onFriendShare) : undefined;
-        var friendsUIClass = hasFriends ? '.cp-share-columns' : '';
+        // check if the pad is password protected
+        var hash = hashes.editHash || hashes.viewHash;
+        var href = origin + pathname + '#' + hash;
+        var parsedHref = Hash.parsePadUrl(href);
+        var hasPassword = parsedHref.hashData.password;
 
-        var content = [];
-        var sfContent = [
-            h('label', Messages.sharedFolders_share),
-            h('br'),
-        ];
-        var shareContent = [
+        var makeFaqLink = function () {
+            var link = h('span', [
+                h('i.fa.fa-question-circle'),
+                h('a', {href: '#'}, Messages.passwordFaqLink)
+            ]);
+            $(link).click(function () {
+                common.openURL(config.origin + "/faq.html#security-pad_password");
+            });
+            return link;
+        };
+
+
+        var parsed = Hash.parsePadUrl(pathname);
+        var canPresent = ['code', 'slide'].indexOf(parsed.type) !== -1;
+
+        var burnAfterReading;
+        var rights = h('div.msg.cp-inline-radio-group', [
             h('label', Messages.share_linkAccess),
-            h('br'),
-            UI.createRadio('cp-share-editable', 'cp-share-editable-true',
-                           Messages.share_linkEdit, true, { mark: {tabindex:1} }),
-            UI.createRadio('cp-share-editable', 'cp-share-editable-false',
-                           Messages.share_linkView, false, { mark: {tabindex:1} }),
-            h('br'),
-        ];
-        var padContent = [
-            h('label', Messages.share_linkOptions),
-            h('br'),
-            UI.createCheckbox('cp-share-embed', Messages.share_linkEmbed, false, { mark: {tabindex:1} }),
-            UI.createCheckbox('cp-share-present', Messages.share_linkPresent, false, { mark: {tabindex:1} }),
-            h('br'),
-        ];
-        if (config.sharedFolder) { Array.prototype.push.apply(content, sfContent); }
-        Array.prototype.push.apply(content, shareContent);
-        if (!config.sharedFolder) { Array.prototype.push.apply(content, padContent); }
-        content.push(UI.dialog.selectable('', { id: 'cp-share-link-preview', tabindex: 1 }));
+            h('div.radio-group',[
+            UI.createRadio('accessRights', 'cp-share-editable-false',
+                           Messages.share_linkView, true, { mark: {tabindex:1} }),
+            canPresent ? UI.createRadio('accessRights', 'cp-share-present',
+                            Messages.share_linkPresent, false, { mark: {tabindex:1} }) : undefined,
+            UI.createRadio('accessRights', 'cp-share-editable-true',
+                           Messages.share_linkEdit, false, { mark: {tabindex:1} })]),
+            burnAfterReading = hashes.viewHash ? UI.createRadio('accessRights', 'cp-share-bar', Messages.burnAfterReading_linkBurnAfterReading,
+                            false, { mark: {tabindex:1}, label: {style: "display: none;"} }) : undefined
+        ]);
 
-        var mainShareColumn = h('div.cp-share-column.contains-nav', content);
-        var link = h('div.cp-share-modal' + friendsUIClass);
+        // Burn after reading
+        // Check if we are an owner of this pad. If we are, we can show the burn after reading option.
+        // When BAR is selected, display a red message indicating the consequence and add
+        // the options to generate the BAR url
+        var barAlert = h('div.alert.alert-danger.cp-alertify-bar-selected', {
+            style: 'display: none;'
+        }, Messages.burnAfterReading_warningLink);
+        var channel = Hash.getSecrets('pad', hash, config.password).channel;
+        common.getPadMetadata({
+            channel: channel
+        }, function (obj) {
+            if (!obj || obj.error) { return; }
+            var priv = common.getMetadataMgr().getPrivateData();
+            // Not an owner: don't display the burn after reading option
+            if (!Array.isArray(obj.owners) || obj.owners.indexOf(priv.edPublic) === -1) {
+                $(burnAfterReading).remove();
+                return;
+            }
+            // When the burn after reading option is selected, transform the modal buttons
+            $(burnAfterReading).show();
+        });
+
+        var $rights = $(rights);
+
         var saveValue = function () {
-            var edit = Util.isChecked($(link).find('#cp-share-editable-true'));
-            var embed = Util.isChecked($(link).find('#cp-share-embed'));
-            var present = Util.isChecked($(link).find('#cp-share-present'));
+            var edit = Util.isChecked($rights.find('#cp-share-editable-true'));
+            var present = Util.isChecked($rights.find('#cp-share-present'));
             common.setAttribute(['general', 'share'], {
                 edit: edit,
-                embed: embed,
                 present: present
             });
         };
-        onFriendShare.reg(saveValue);
-        var getLinkValue = function (initValue) {
-            var val = initValue || {};
-            var edit = val.edit !== undefined ? val.edit : Util.isChecked($(link).find('#cp-share-editable-true'));
-            var embed = val.embed !== undefined ? val.embed : Util.isChecked($(link).find('#cp-share-embed'));
-            var present = val.present !== undefined ? val.present : Util.isChecked($(link).find('#cp-share-present'));
 
+        var burnAfterReadingUrl;
+
+        var getLinkValue = function (initValue, cb) {
+            var val = initValue || {};
+            var edit = val.edit !== undefined ? val.edit : Util.isChecked($rights.find('#cp-share-editable-true'));
+            var embed = val.embed;
+            var present = val.present !== undefined ? val.present : Util.isChecked($rights.find('#cp-share-present'));
+            var burnAfterReading = Util.isChecked($rights.find('#cp-share-bar'));
+            if (burnAfterReading && !burnAfterReadingUrl) {
+                if (cb) { // Called from the contacts tab, "share" button
+                    var barHref = origin + pathname + '#' + (hashes.viewHash || hashes.editHash);
+                    return makeBurnAfterReadingUrl(common, barHref, channel, function (url) {
+                        cb(url);
+                    });
+                }
+                return Messages.burnAfterReading_generateLink;
+            }
             var hash = (!hashes.viewHash || (edit && hashes.editHash)) ? hashes.editHash : hashes.viewHash;
-            var href = origin + pathname + '#' + hash;
+            var href = burnAfterReading ? burnAfterReadingUrl : (origin + pathname + '#' + hash);
             var parsed = Hash.parsePadUrl(href);
             return origin + parsed.getUrl({embed: embed, present: present});
         };
-        var linkButtons = [{
-            className: 'cancel',
-            name: Messages.cancel,
-            onClick: function () {},
-            keys: [27]
-        }];
-        var shareButtons = [{
-            className: 'primary',
-            name: Messages.share_linkCopy,
-            onClick: function () {
-                saveValue();
-                var v = getLinkValue();
-                var success = Clipboard.copy(v);
-                if (success) { UI.log(Messages.shareSuccess); }
-            },
-            keys: [13]
-        }];
-        if (!config.sharedFolder) {
-            shareButtons.push({
-                className: 'primary',
-                name: Messages.share_linkOpen,
-                onClick: function () {
-                    saveValue();
-                    var v = getLinkValue();
-                    window.open(v);
-                },
-                keys: [[13, 'ctrl']]
+
+        var makeCancelButton = function() {
+            return {
+                className: 'cancel',
+                name: Messages.cancel,
+                onClick: function () {},
+                keys: [27]
+            };
+        };
+
+        // Share link tab
+        var linkContent = config.sharedFolder ? [
+            h('label', Messages.sharedFolders_share),
+            h('br'),
+        ] : [
+            UI.createCheckbox('cp-share-embed', Messages.share_linkEmbed, false, { mark: {tabindex:1} }),
+        ];
+        linkContent.push(h('div.cp-spacer'));
+        linkContent.push(UI.dialog.selectableArea('', { id: 'cp-share-link-preview', tabindex: 1, rows:3}));
+
+        // Show alert if the pad is password protected
+        if (hasPassword) {
+            linkContent.push(h('div.alert.alert-primary', [
+                h('i.fa.fa-lock'),
+                Messages.share_linkPasswordAlert, h('br'),
+                makeFaqLink()
+            ]));
+        }
+
+        // warning about sharing links
+        var localStore = window.cryptpadStore;
+        var dismissButton = h('span.fa.fa-times');
+        var shareLinkWarning = h('div.alert.alert-warning.dismissable',
+            { style: 'display: none;' },
+            [
+                h('span.cp-inline-alert-text', Messages.share_linkWarning),
+                dismissButton
+            ]);
+        linkContent.push(shareLinkWarning);
+
+        localStore.get('hide-alert-shareLinkWarning', function (val) {
+            if (val === '1') { return; }
+            $(shareLinkWarning).show();
+
+            $(dismissButton).on('click', function () {
+                localStore.put('hide-alert-shareLinkWarning', '1');
+                $(shareLinkWarning).remove();
             });
-        }
 
-        var $link = $(link);
-        $(mainShareColumn).append(UI.dialog.getButtons(shareButtons, config.onClose)).appendTo($link);
-        $(friendsList).appendTo($link);
-
-        if (!hashes.editHash) {
-            $(link).find('#cp-share-editable-false').attr('checked', true);
-            $(link).find('#cp-share-editable-true').removeAttr('checked').attr('disabled', true);
-        } else if (!hashes.viewHash) {
-            $(link).find('#cp-share-editable-false').removeAttr('checked').attr('disabled', true);
-            $(link).find('#cp-share-editable-true').attr('checked', true);
-        }
-
-        $(link).find('#cp-share-link-preview').val(getLinkValue());
-        $(link).find('input[type="radio"], input[type="checkbox"]').on('change', function () {
-            $(link).find('#cp-share-link-preview').val(getLinkValue());
         });
+
+        linkContent.push($(barAlert).clone()[0]); // Burn after reading
+
+        var link = h('div.cp-share-modal', linkContent);
+        var $link = $(link);
+
+        var linkButtons = [
+            makeCancelButton(),
+            !config.sharedFolder && {
+              className: 'secondary cp-nobar',
+              name: Messages.share_linkOpen,
+              onClick: function () {
+                  saveValue();
+                  var v = getLinkValue({
+                    embed: Util.isChecked($link.find('#cp-share-embed'))
+                  });
+                  window.open(v);
+                  return true;
+              },
+              keys: [[13, 'ctrl']]
+            }, {
+              className: 'primary cp-nobar',
+              name: Messages.share_linkCopy,
+              onClick: function () {
+                  saveValue();
+                  var v = getLinkValue({
+                    embed: Util.isChecked($link.find('#cp-share-embed'))
+                  });
+                  var success = Clipboard.copy(v);
+                  if (success) { UI.log(Messages.shareSuccess); }
+              },
+              keys: [13]
+            }, {
+              className: 'primary cp-bar',
+              name: 'GENERATE LINK',
+              onClick: function () {
+                var barHref = origin + pathname + '#' + (hashes.viewHash || hashes.editHash);
+                makeBurnAfterReadingUrl(common, barHref, channel, function (url) {
+                    burnAfterReadingUrl = url;
+                    $rights.find('input[type="radio"]').trigger('change');
+                });
+                return true;
+              },
+              keys: []
+            }
+          ];
 
         var frameLink = UI.dialog.customModal(link, {
             buttons: linkButtons,
             onClose: config.onClose,
         });
+        $(frameLink).find('.cp-bar').hide();
+
+        // Share with contacts tab
+
+        var hasFriends = Object.keys(config.friends || {}).length !== 0;
+        var onFriendShare = Util.mkEvent();
+
+
+        var friendsObject = hasFriends ? createShareWithFriends(config, onFriendShare, getLinkValue) : noContactsMessage(common);
+        var friendsList = friendsObject.content;
+
+        onFriendShare.reg(saveValue);
+
+        var contactsContent = h('div.cp-share-modal');
+        var $contactsContent = $(contactsContent);
+
+        $contactsContent.append(friendsList);
+
+        // Show alert if the pad is password protected
+        if (hasPassword) {
+            $contactsContent.append(h('div.alert.alert-primary', [
+                h('i.fa.fa-unlock'),
+                Messages.share_contactPasswordAlert, h('br'),
+                makeFaqLink()
+            ]));
+        }
+
+        $(contactsContent).append($(barAlert).clone()); // Burn after reading
+
+        var contactButtons = friendsObject.buttons;
+        contactButtons.unshift(makeCancelButton());
+
+        var onShowContacts = function () {
+            if (!hasFriends) {
+                $rights.hide();
+            }
+        };
+
+        var frameContacts = UI.dialog.customModal(contactsContent, {
+            buttons: contactButtons,
+            onClose: config.onClose,
+        });
 
         // Embed tab
         var getEmbedValue = function () {
-            var hash = hashes.viewHash || hashes.editHash;
-            var href = origin + pathname + '#' + hash;
-            var parsed = Hash.parsePadUrl(href);
-            var url = origin + parsed.getUrl({embed: true, present: true});
+            var url = getLinkValue({
+                embed: true
+            });
             return '<iframe src="' + url + '"></iframe>';
         };
-        var embed = h('div.cp-share-modal', [
-            h('h3', Messages.viewEmbedTitle),
+        var embedContent = [
             h('p', Messages.viewEmbedTag),
-            h('br'),
-            UI.dialog.selectable(getEmbedValue())
-        ]);
-        var embedButtons = [{
-            className: 'cancel',
-            name: Messages.cancel,
-            onClick: function () {},
-            keys: [27]
-        }, {
+            UI.dialog.selectableArea(getEmbedValue(), { id: 'cp-embed-link-preview', tabindex: 1, rows: 3})
+        ];
+
+        // Show alert if the pad is password protected
+        if (hasPassword) {
+            embedContent.push(h('div.alert.alert-primary', [
+                h('i.fa.fa-lock'), ' ',
+                Messages.share_embedPasswordAlert, h('br'),
+                makeFaqLink()
+            ]));
+        }
+
+        var embedButtons = [
+            makeCancelButton(), {
             className: 'primary',
             name: Messages.share_linkCopy,
             onClick: function () {
@@ -1168,18 +1386,72 @@ define([
             },
             keys: [13]
         }];
+
+        var onShowEmbed = function () {
+            $rights.find('#cp-share-bar').closest('label').hide();
+            $rights.find('input[type="radio"]:enabled').first().prop('checked', 'checked');
+            $rights.find('input[type="radio"]').trigger('change');
+        };
+
+        var embed = h('div.cp-share-modal', embedContent);
+        var $embed = $(embed);
+
         var frameEmbed = UI.dialog.customModal(embed, {
             buttons: embedButtons,
             onClose: config.onClose,
         });
 
+        // update values for link and embed preview when radio btns change
+        $embed.find('#cp-embed-link-preview').val(getEmbedValue());
+        $link.find('#cp-share-link-preview').val(getLinkValue());
+        $rights.find('input[type="radio"]').on('change', function () {
+            $link.find('#cp-share-link-preview').val(getLinkValue({
+                embed: Util.isChecked($link.find('#cp-share-embed'))
+            }));
+            // Hide or show the burn after reading alert
+            if (Util.isChecked($rights.find('#cp-share-bar')) && !burnAfterReadingUrl) {
+                $('.cp-alertify-bar-selected').show();
+                // Show burn after reading button
+                $('.alertify').find('.cp-bar').show();
+                $('.alertify').find('.cp-nobar').hide();
+                return;
+            }
+            $embed.find('#cp-embed-link-preview').val(getEmbedValue());
+            // Hide burn after reading button
+            $('.alertify').find('.cp-nobar').show();
+            $('.alertify').find('.cp-bar').hide();
+            $('.cp-alertify-bar-selected').hide();
+        });
+        $link.find('input[type="checkbox"]').on('change', function () {
+            $link.find('#cp-share-link-preview').val(getLinkValue({
+                embed: Util.isChecked($link.find('#cp-share-embed'))
+            }));
+        });
+
+
         // Create modal
+        var resetTab = function () {
+            $rights.show();
+            $rights.find('label.cp-radio').show();
+        };
         var tabs = [{
+            title: Messages.share_contactCategory,
+            icon: "fa fa-address-book",
+            content: frameContacts,
+            active: hasFriends,
+            onShow: onShowContacts,
+            onHide: resetTab
+        }, {
             title: Messages.share_linkCategory,
-            content: frameLink
+            icon: "fa fa-link",
+            content: frameLink,
+            active: !hasFriends
         }, {
             title: Messages.share_embedCategory,
-            content: frameEmbed
+            icon: "fa fa-code",
+            content: frameEmbed,
+            onShow: onShowEmbed,
+            onHide: resetTab
         }];
         if (typeof(AppConfig.customizeShareOptions) === 'function') {
             AppConfig.customizeShareOptions(hashes, tabs, {
@@ -1188,32 +1460,51 @@ define([
                 pathname: pathname
             });
         }
+
+        var modal = UI.dialog.tabs(tabs);
+        $(modal).find('.alertify-tabs-titles').after(rights);
+
+        // disable edit share options if you don't have edit rights
+        if (!hashes.editHash) {
+            $rights.find('#cp-share-editable-false').attr('checked', true);
+            $rights.find('#cp-share-editable-true').removeAttr('checked').attr('disabled', true);
+        } else if (!hashes.viewHash) {
+            $rights.find('#cp-share-editable-false').removeAttr('checked').attr('disabled', true);
+            $rights.find('#cp-share-present').removeAttr('checked').attr('disabled', true);
+            $rights.find('#cp-share-editable-true').attr('checked', true);
+        }
+
         common.getAttribute(['general', 'share'], function (err, val) {
             val = val || {};
-            if ((val.edit === false && hashes.viewHash) || !hashes.editHash) {
-                $(link).find('#cp-share-editable-false').prop('checked', true);
-                $(link).find('#cp-share-editable-true').prop('checked', false);
+            if (val.present && canPresent) {
+                $rights.find('#cp-share-editable-false').prop('checked', false);
+                $rights.find('#cp-share-editable-true').prop('checked', false);
+                $rights.find('#cp-share-present').prop('checked', true);
+            } else if ((val.edit === false && hashes.viewHash) || !hashes.editHash) {
+                $rights.find('#cp-share-editable-false').prop('checked', true);
+                $rights.find('#cp-share-editable-true').prop('checked', false);
+                $rights.find('#cp-share-present').prop('checked', false);
             } else {
-                $(link).find('#cp-share-editable-true').prop('checked', true);
-                $(link).find('#cp-share-editable-false').prop('checked', false);
+                $rights.find('#cp-share-editable-true').prop('checked', true);
+                $rights.find('#cp-share-editable-false').prop('checked', false);
+                $rights.find('#cp-share-present').prop('checked', false);
             }
-            if (val.embed) { $(link).find('#cp-share-embed').prop('checked', true); }
-            if (val.present) { $(link).find('#cp-share-present').prop('checked', true); }
-            if (config.sharedFolder) {
-                delete val.embed;
+            delete val.embed;
+            if (!canPresent) {
                 delete val.present;
             }
-            $(link).find('#cp-share-link-preview').val(getLinkValue(val));
+            $link.find('#cp-share-link-preview').val(getLinkValue(val));
         });
         common.getMetadataMgr().onChange(function () {
             // "hashes" is only available is the secure "share" app
             var _hashes = common.getMetadataMgr().getPrivateData().hashes;
             if (!_hashes) { return; }
             hashes = _hashes;
-            $(link).find('#cp-share-link-preview').val(getLinkValue());
+            $link.find('#cp-share-link-preview').val(getLinkValue());
         });
-        return tabs;
+        return modal;
     };
+
     UIElements.createFileShareModal = function (config) {
         var origin = config.origin;
         var pathname = config.pathname;
@@ -1224,56 +1515,133 @@ define([
         if (!hashes.fileHash) { throw new Error("You must provide a file hash"); }
         var url = origin + pathname + '#' + hashes.fileHash;
 
+        // check if the file is password protected
+        var parsedHref = Hash.parsePadUrl(url);
+        var hasPassword = parsedHref.hashData.password;
 
-        // Share link tab
-        var hasFriends = Object.keys(config.friends || {}).length !== 0;
-        var friendsList = hasFriends ? createShareWithFriends(config) : undefined;
-        var friendsUIClass = hasFriends ? '.cp-share-columns' : '';
-        var mainShareColumn = h('div.cp-share-column.contains-nav', [
-            h('div.cp-share-column', [
-                hasFriends ? h('p', Messages.share_description) : undefined,
-                UI.dialog.selectable('', { id: 'cp-share-link-preview' }),
-            ]),
-        ]);
-        var link = h('div.cp-share-modal' + friendsUIClass);
+        var makeFaqLink = function () {
+            var link = h('span', [
+                h('i.fa.fa-question-circle'),
+                h('a', {href: '#'}, Messages.passwordFaqLink)
+            ]);
+            $(link).click(function () {
+                common.openURL(config.origin + "/faq.html#security-pad_password");
+            });
+            return link;
+        };
+
         var getLinkValue = function () { return url; };
-        $(mainShareColumn).find('#cp-share-link-preview').val(getLinkValue());
-        var linkButtons = [{
-            className: 'cancel',
+
+        var makeCancelButton = function() {
+            return {className: 'cancel',
             name: Messages.cancel,
             onClick: function () {},
-            keys: [27]
-        }];
-        var shareButtons = [{
-            className: 'primary',
-            name: Messages.share_linkCopy,
-            onClick: function () {
-                var v = getLinkValue();
-                var success = Clipboard.copy(v);
-                if (success) { UI.log(Messages.shareSuccess); }
-            },
-            keys: [13]
-        }];
+            keys: [27]};
+        };
 
-        var $link = $(link);
-        $(mainShareColumn).append(UI.dialog.getButtons(shareButtons, config.onClose)).appendTo($link);
-        $(friendsList).appendTo($link);
+        // Share link tab
+        var linkContent = [
+            UI.dialog.selectableArea(getLinkValue(), { id: 'cp-share-link-preview', tabindex: 1, rows:2 })
+        ];
+
+        // Show alert if the pad is password protected
+        if (hasPassword) {
+            linkContent.push(h('div.alert.alert-primary', [
+                h('i.fa.fa-lock'),
+                Messages.share_linkPasswordAlert, h('br'),
+                makeFaqLink()
+            ]));
+        }
+
+        // warning about sharing links
+        var localStore = window.cryptpadStore;
+        var dismissButton = h('span.fa.fa-times');
+        var shareLinkWarning = h('div.alert.alert-warning.dismissable',
+            { style: 'display: none;' },
+            [
+                h('span.cp-inline-alert-text', Messages.share_linkWarning),
+                dismissButton
+            ]);
+        linkContent.push(shareLinkWarning);
+
+        localStore.get('hide-alert-shareLinkWarning', function (val) {
+            if (val === '1') { return; }
+            $(shareLinkWarning).show();
+
+            $(dismissButton).on('click', function () {
+                localStore.put('hide-alert-shareLinkWarning', '1');
+                $(shareLinkWarning).remove();
+            });
+
+        });
+
+        var link = h('div.cp-share-modal', linkContent);
+
+        var linkButtons = [
+            makeCancelButton(),
+            {
+                className: 'primary',
+                name: Messages.share_linkCopy,
+                onClick: function () {
+                    var v = getLinkValue();
+                    var success = Clipboard.copy(v);
+                    if (success) { UI.log(Messages.shareSuccess);
+                }
+              },
+              keys: [13]
+            }
+        ];
 
         var frameLink = UI.dialog.customModal(link, {
             buttons: linkButtons,
             onClose: config.onClose,
         });
 
+        // share with contacts tab
+        var hasFriends = Object.keys(config.friends || {}).length !== 0;
+
+        var friendsObject = hasFriends ? createShareWithFriends(config, null, getLinkValue) : noContactsMessage(common);
+        var friendsList = friendsObject.content;
+
+        var contactsContent = h('div.cp-share-modal');
+        var $contactsContent = $(contactsContent);
+        $contactsContent.append(friendsList);
+
+        // Show alert if the pad is password protected
+        if (hasPassword) {
+            $contactsContent.append(h('div.alert.alert-primary', [
+                h('i.fa.fa-unlock'),
+                Messages.share_contactPasswordAlert, h('br'),
+                makeFaqLink()
+            ]));
+        }
+
+        var contactButtons = friendsObject.buttons;
+        contactButtons.unshift(makeCancelButton());
+
+        var frameContacts = UI.dialog.customModal(contactsContent, {
+            buttons: contactButtons,
+            onClose: config.onClose,
+        });
+
+
         // Embed tab
         var embed = h('div.cp-share-modal', [
-            h('h3', Messages.fileEmbedTitle),
             h('p', Messages.fileEmbedScript),
-            h('br'),
             UI.dialog.selectable(common.getMediatagScript()),
             h('p', Messages.fileEmbedTag),
-            h('br'),
             UI.dialog.selectable(common.getMediatagFromHref(fileData)),
         ]);
+
+        // Show alert if the pad is password protected
+        if (hasPassword) {
+            embed.append(h('div.alert.alert-primary', [
+                h('i.fa.fa-lock'), ' ',
+                Messages.share_embedPasswordAlert, h('br'),
+                makeFaqLink()
+            ]));
+        }
+
         var embedButtons = [{
             className: 'cancel',
             name: Messages.cancel,
@@ -1296,10 +1664,18 @@ define([
 
         // Create modal
         var tabs = [{
+            title: Messages.share_contactCategory,
+            icon: "fa fa-address-book",
+            content: frameContacts,
+            active: hasFriends,
+        }, {
             title: Messages.share_linkCategory,
-            content: frameLink
+            icon: "fa fa-link",
+            content: frameLink,
+            active: !hasFriends
         }, {
             title: Messages.share_embedCategory,
+            icon: "fa fa-code",
             content: frameEmbed
         }];
         if (typeof(AppConfig.customizeShareOptions) === 'function') {
@@ -1309,22 +1685,23 @@ define([
                 pathname: pathname
             });
         }
-        return tabs;
+        var modal = UI.dialog.tabs(tabs);
+        return modal;
     };
 
     UIElements.createInviteTeamModal = function (config) {
         var common = config.common;
         var hasFriends = Object.keys(config.friends || {}).length !== 0;
 
-        if (!hasFriends) {
-            return void UI.alert(Messages.team_noFriend);
-        }
         var privateData = common.getMetadataMgr().getPrivateData();
         var team = privateData.teams[config.teamId];
         if (!team) { return void UI.warn(Messages.error); }
 
+        var origin = privateData.origin;
+
         var module = config.module || common.makeUniversal('team');
 
+        // Invite contacts
         var $div;
         var refreshButton = function () {
             if (!$div) { return; }
@@ -1338,47 +1715,231 @@ define([
                 $btn.prop('disabled', 'disabled');
             }
         };
-        var list = UIElements.getUserGrid(Messages.team_pickFriends, {
-            common: common,
-            data: config.friends,
-        }, refreshButton);
-        $div = $(list.div);
-        refreshButton();
+        var getContacts = function () {
+            var list = UIElements.getUserGrid(Messages.team_pickFriends, {
+                common: common,
+                data: config.friends,
+                large: true
+            }, refreshButton);
+            var div = h('div.contains-nav');
+            var $div = $(div);
+            $div.append(list.div);
+            var contactsButtons = [{
+                className: 'primary',
+                name: Messages.team_inviteModalButton,
+                onClick: function () {
+                    var $sel = $div.find('.cp-usergrid-user.cp-selected');
+                    var sel = $sel.toArray();
+                    if (!sel.length) { return; }
 
-        var buttons = [{
+                    sel.forEach(function (el) {
+                        var curve = $(el).attr('data-curve');
+                        module.execCommand('INVITE_TO_TEAM', {
+                            teamId: config.teamId,
+                            user: config.friends[curve]
+                        }, function (obj) {
+                            if (obj && obj.error) {
+                                console.error(obj.error);
+                                return UI.warn(Messages.error);
+                            }
+                        });
+                    });
+                },
+                keys: [13]
+            }];
+
+            return {
+                content: div,
+                buttons: contactsButtons
+            };
+        };
+        var friendsObject = hasFriends ? getContacts() : noContactsMessage(common);
+        var friendsList = friendsObject.content;
+        var contactsButtons = friendsObject.buttons;
+        contactsButtons.unshift({
+            className: 'cancel',
+            name: Messages.cancel,
+            onClick: function () {},
+            keys: [27]
+        });
+
+        var contactsContent = h('div.cp-share-modal', [
+            friendsList
+        ]);
+
+        var frameContacts = UI.dialog.customModal(contactsContent, {
+            buttons: contactsButtons,
+        });
+
+        var linkName, linkPassword, linkMessage, linkError, linkSpinText;
+        var linkForm, linkSpin, linkResult;
+        var linkWarning;
+        // Invite from link
+        var dismissButton = h('span.fa.fa-times');
+        var linkContent = h('div.cp-share-modal', [
+            h('p', Messages.team_inviteLinkTitle ),
+            linkError = h('div.alert.alert-danger.cp-teams-invite-alert', {style : 'display: none;'}),
+            linkForm = h('div.cp-teams-invite-form', [
+                // autofill: 'off' was insufficient
+                // adding these two fake inputs confuses firefox and prevents unwanted form autofill
+                h('input', { type: 'text', style: 'display: none'}),
+                h('input', { type: 'password', style: 'display: none'}),
+
+                linkName = h('input', {
+                    placeholder:  Messages.team_inviteLinkTempName
+                }),
+                h('br'),
+                h('div.cp-teams-invite-block', [
+                    h('span', Messages.team_inviteLinkSetPassword),
+                    h('a.cp-teams-help.fa.fa-question-circle', {
+                        href: origin + '/faq.html#security-pad_password',
+                        target: "_blank",
+                        'data-tippy-placement': "right"
+                    })
+                ]),
+                linkPassword = UI.passwordInput({
+                    id: 'cp-teams-invite-password',
+                    placeholder: Messages.login_password
+                }),
+                h('div.cp-teams-invite-block',
+                    h('span', Messages.team_inviteLinkNote)
+                ),
+                linkMessage = h('textarea.cp-teams-invite-message', {
+                    placeholder: Messages.team_inviteLinkNoteMsg,
+                    rows: 3
+                })
+            ]),
+            linkSpin = h('div.cp-teams-invite-spinner', {
+                style: 'display: none;'
+            }, [
+                h('i.fa.fa-spinner.fa-spin'),
+                linkSpinText = h('span', Messages.team_inviteLinkLoading)
+            ]),
+            linkResult = h('div', {
+                style: 'display: none;'
+            }, h('textarea', {
+                readonly: 'readonly'
+            })),
+            linkWarning = h('div.cp-teams-invite-alert.alert.alert-warning.dismissable', {
+                style: "display: none;"
+            }, [
+                h('span.cp-inline-alert-text', Messages.team_inviteLinkWarning),
+                dismissButton
+            ])
+        ]);
+        $(linkMessage).keydown(function (e) {
+            if (e.which === 13) {
+                e.stopPropagation();
+            }
+        });
+        var localStore = window.cryptpadStore;
+        localStore.get('hide-alert-teamInvite', function (val) {
+            if (val === '1') { return; }
+            $(linkWarning).show();
+
+            $(dismissButton).on('click', function () {
+                localStore.put('hide-alert-teamInvite', '1');
+                $(linkWarning).remove();
+            });
+        });
+        var $linkContent = $(linkContent);
+        var href;
+        var process = function () {
+            var $nav = $linkContent.closest('.alertify').find('nav');
+            $(linkError).text('').hide();
+            var name = $(linkName).val();
+            var pw = $(linkPassword).find('input').val();
+            var msg = $(linkMessage).val();
+            var hash = Hash.createRandomHash('invite', pw);
+            var hashData = Hash.parseTypeHash('invite', hash);
+            href = origin + '/teams/#' + hash;
+            if (!name || !name.trim()) {
+                $(linkError).text(Messages.team_inviteLinkErrorName).show();
+                return true;
+            }
+
+            var seeds = InviteInner.deriveSeeds(hashData.key);
+            var salt = InviteInner.deriveSalt(pw, AppConfig.loginSalt);
+
+            var bytes64;
+            NThen(function (waitFor) {
+                $(linkForm).hide();
+                $(linkSpin).show();
+                $nav.find('button.cp-teams-invite-create').hide();
+                $nav.find('button.cp-teams-invite-copy').show();
+                setTimeout(waitFor(), 150);
+            }).nThen(function (waitFor) {
+                InviteInner.deriveBytes(seeds.scrypt, salt, waitFor(function (_bytes) {
+                    bytes64 = _bytes;
+                }));
+            }).nThen(function (waitFor) {
+                module.execCommand('CREATE_INVITE_LINK', {
+                    name: name,
+                    password: pw,
+                    message: msg,
+                    bytes64: bytes64,
+                    hash: hash,
+                    teamId: config.teamId,
+                    seeds: seeds,
+                }, waitFor(function (obj) {
+                    if (obj && obj.error) {
+                        waitFor.abort();
+                        $(linkSpin).hide();
+                        $(linkForm).show();
+                        $nav.find('button.cp-teams-invite-create').show();
+                        $nav.find('button.cp-teams-invite-copy').hide();
+                        return void $(linkError).text(Messages.team_inviteLinkError).show();
+                    }
+                    // Display result here
+                    $(linkSpin).hide();
+                    $(linkResult).show().find('textarea').text(href);
+                    $nav.find('button.cp-teams-invite-copy').prop('disabled', '');
+                }));
+            });
+            return true;
+        };
+        var linkButtons = [{
             className: 'cancel',
             name: Messages.cancel,
             onClick: function () {},
             keys: [27]
         }, {
-            className: 'primary',
-            name: Messages.team_inviteModalButton,
+            className: 'primary cp-teams-invite-create',
+            name: Messages.team_inviteLinkCreate,
             onClick: function () {
-                var $sel = $div.find('.cp-usergrid-user.cp-selected');
-                var sel = $sel.toArray();
-                if (!sel.length) { return; }
-
-                sel.forEach(function (el) {
-                    var curve = $(el).attr('data-curve');
-                    module.execCommand('INVITE_TO_TEAM', {
-                        teamId: config.teamId,
-                        user: config.friends[curve]
-                    }, function (obj) {
-                        if (obj && obj.error) {
-                            console.error(obj.error);
-                            return UI.warn(Messages.error);
-                        }
-                    });
-                });
+                return process();
             },
-            keys: [13]
+            keys: []
+        }, {
+            className: 'primary cp-teams-invite-copy',
+            name: Messages.team_inviteLinkCopy,
+            onClick: function () {
+                if (!href) { return; }
+                var success = Clipboard.copy(href);
+                if (success) { UI.log(Messages.shareSuccess); }
+            },
+            keys: []
         }];
 
-        var content = h('div', [
-            list.div
-        ]);
+        var frameLink = UI.dialog.customModal(linkContent, {
+            buttons: linkButtons,
+        });
+        $(frameLink).find('.cp-teams-invite-copy').prop('disabled', 'disabled').hide();
 
-        var modal = UI.dialog.customModal(content, {buttons: buttons});
+        // Create modal
+        var tabs = [{
+            title: Messages.share_contactCategory,
+            icon: "fa fa-address-book",
+            content: frameContacts,
+            active: hasFriends
+        }, {
+            title: Messages.share_linkCategory,
+            icon: "fa fa-link",
+            content: frameLink,
+            active: !hasFriends
+        }];
+
+        var modal = UI.dialog.tabs(tabs);
         UI.openCustomModal(modal);
     };
 
@@ -1438,9 +1999,10 @@ define([
                     // Old import button, used in settings
                     button
                     .click(common.prepareFeedback(type))
-                    .click(importContent('text/plain', function (content, file) {
-                        callback(content, file);
-                    }, {accept: data ? data.accept : undefined}));
+                    .click(importContent((data && data.binary) ? 'application/octet-stream' : 'text/plain', callback, {
+                        accept: data ? data.accept : undefined,
+                        binary: data ? data.binary : undefined
+                    }));
                 //}
                 break;
             case 'upload':
@@ -1699,7 +2261,7 @@ define([
                             if (e) { return void console.error(e); }
                             UIElements.getProperties(common, data, function (e, $prop) {
                                 if (e) { return void console.error(e); }
-                                UI.alert($prop[0], undefined, true);
+                                UI.openCustomModal($prop[0]);
                             });
                         });
                     });
@@ -1838,12 +2400,12 @@ define([
         for (var k in actions) {
             $('<button>', {
                 'data-type': k,
-                'class': 'fa ' + actions[k].icon,
+                'class': 'pure-button fa ' + actions[k].icon,
                 title: Messages['mdToolbar_' + k] || k
             }).click(onClick).appendTo($toolbar);
         }
         $('<button>', {
-            'class': 'fa fa-question cp-markdown-help',
+            'class': 'pure-button fa fa-question cp-markdown-help',
             title: Messages.mdToolbar_help
         }).click(function () {
             var href = Messages.mdToolbar_tutorial;
@@ -2288,7 +2850,7 @@ define([
                 prettyUsage = Messages._getKey('formattedMB', [usage]);
                 prettyLimit = Messages._getKey('formattedMB', [limit]);
             }
-            
+
             if (quota < 0.8) { $usage.addClass('cp-limit-usage-normal'); }
             else if (quota < 1) { $usage.addClass('cp-limit-usage-warning'); }
             else { $usage.addClass('cp-limit-usage-above'); }
@@ -2355,9 +2917,11 @@ define([
         var $button = $('<button>', {
             'class': ''
         }).append($('<span>', {'class': 'cp-dropdown-button-title'}).html(config.text || ""));
-        /*$('<span>', {
-            'class': 'fa fa-caret-down',
-        }).appendTo($button);*/
+        if (config.caretDown) {
+            $('<span>', {
+                'class': 'fa fa-caret-down',
+            }).prependTo($button);
+        }
 
         // Menu
         var $innerblock = $('<div>', {'class': 'cp-dropdown-content'});
@@ -2424,6 +2988,12 @@ define([
         if (config.isSelect) {
             var pressed = '';
             var to;
+            $container.on('click', 'a', function () {
+                value = $(this).data('value');
+                var $val = $(this);
+                var textValue = $val.html() || value;
+                $button.find('.cp-dropdown-button-title').html(textValue);
+            });
             $container.keydown(function (e) {
                 var $value = $innerblock.find('[data-value].cp-dropdown-element-active:visible');
                 if (e.which === 38) { // Up
@@ -3446,6 +4016,7 @@ define([
 
     UIElements.onServerError = function (common, err, toolbar, cb) {
         if (["EDELETED", "EEXPIRED"].indexOf(err.type) === -1) { return; }
+        var priv = common.getMetadataMgr().getPrivateData();
         var msg = err.type;
         if (err.type === 'EEXPIRED') {
             msg = Messages.expiredError;
@@ -3453,33 +4024,42 @@ define([
                 msg += Messages.errorCopy;
             }
         } else if (err.type === 'EDELETED') {
+            if (priv.burnAfterReading) { return void cb(); }
             msg = Messages.deletedError;
             if (err.loaded) {
                 msg += Messages.errorCopy;
             }
         }
+        var sframeChan = common.getSframeChannel();
+        sframeChan.event('EV_SHARE_OPEN', {hidden: true});
         if (toolbar && typeof toolbar.deleted === "function") { toolbar.deleted(); }
         UI.errorLoadingScreen(msg, true, true);
         (cb || function () {})();
     };
 
-    UIElements.displayPasswordPrompt = function (common, isError) {
+    UIElements.displayPasswordPrompt = function (common, cfg, isError) {
         var error;
         if (isError) { error = setHTML(h('p.cp-password-error'), Messages.password_error); }
         var info = h('p.cp-password-info', Messages.password_info);
         var password = UI.passwordInput({placeholder: Messages.password_placeholder});
+        var $password = $(password);
         var button = h('button', Messages.password_submit);
+        cfg = cfg || {};
+
+        if (cfg.value && !isError) {
+            $password.find('.cp-password-input').val(cfg.value);
+        }
 
         var submit = function () {
-            var value = $(password).find('.cp-password-input').val();
+            var value = $password.find('.cp-password-input').val();
             UI.addLoadingScreen();
             common.getSframeChannel().query('Q_PAD_PASSWORD_VALUE', value, function (err, data) {
                 if (!data) {
-                    UIElements.displayPasswordPrompt(common, true);
+                    UIElements.displayPasswordPrompt(common, cfg, true);
                 }
             });
         };
-        $(password).find('.cp-password-input').on('keydown', function (e) { if (e.which === 13) { submit(); } });
+        $password.find('.cp-password-input').on('keydown', function (e) { if (e.which === 13) { submit(); } });
         $(button).on('click', function () { submit(); });
 
 
@@ -3493,7 +4073,27 @@ define([
         ]);
         UI.errorLoadingScreen(block);
 
-        $(password).find('.cp-password-input').focus();
+        $password.find('.cp-password-input').focus();
+    };
+
+    UIElements.displayBurnAfterReadingPage = function (common, cb) {
+        var info = h('p.cp-password-info', Messages.burnAfterReading_warningAccess);
+        var button = h('button.primary', Messages.burnAfterReading_proceed);
+
+        $(button).on('click', function () {
+            cb();
+        });
+
+        var block = h('div#cp-loading-burn-after-reading', [
+            info,
+            button
+        ]);
+        UI.errorLoadingScreen(block);
+    };
+    UIElements.getBurnAfterReadingWarning = function (common) {
+        var priv = common.getMetadataMgr().getPrivateData();
+        if (!priv.burnAfterReading) { return; }
+        return h('div.alert.alert-danger.cp-burn-after-reading', Messages.burnAfterReading_warningDeleted);
     };
 
     var crowdfundingState = false;
@@ -3552,6 +4152,9 @@ define([
         storePopupState = true;
         if (data && data.stored) { return; } // We won't display the popup for dropped files
         var priv = common.getMetadataMgr().getPrivateData();
+
+        // This pad will be deleted automatically, it shouldn't be stored
+        if (priv.burnAfterReading) { return; }
 
         var typeMsg = priv.pathname.indexOf('/file/') !== -1 ? Messages.autostore_file :
                         priv.pathname.indexOf('/drive/') !== -1 ? Messages.autostore_sf :
@@ -3736,7 +4339,7 @@ define([
         };
 
         var content = h('div.cp-share-modal', [
-            setHTML(h('p'), text)
+            setHTML(h('p'), text),
         ]);
         UI.proposal(content, todo);
     };
@@ -4030,6 +4633,7 @@ define([
             common.mailbox.sendTo("INVITE_TO_TEAM_ANSWER", {
                 answer: yes,
                 teamChannel: msg.content.team.channel,
+                teamName: teamName,
                 user: {
                     displayName: user.name,
                     avatar: user.avatar,

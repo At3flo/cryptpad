@@ -184,6 +184,9 @@ define([
                 var save = function () {
                     // Store the value
                     var name = $input.val();
+                    if (!name || !name.trim()) {
+                        return kanban.onChange();
+                    }
                     // Remove the input
                     $(el).text(name);
                     // Save the value for the correct board
@@ -286,7 +289,7 @@ define([
                 kanban.inEditMode = true;
                 // create a form to enter element
                 var boardId = $(el.parentNode.parentNode).attr("data-id");
-                var $item = $('<div>', {'class': 'kanban-item'});
+                var $item = $('<div>', {'class': 'kanban-item new-item'});
                 var $input = getInput().val(name).appendTo($item);
                 kanban.addForm(boardId, $item[0]);
                 $input.focus();
@@ -347,6 +350,8 @@ define([
 
     var mkHelpMenu = function (framework) {
         var $toolbarContainer = $('#cp-app-kanban-container');
+        $toolbarContainer.prepend(framework._.sfCommon.getBurnAfterReadingWarning());
+
         var helpMenu = framework._.sfCommon.createHelpMenu(['kanban']);
         $toolbarContainer.prepend(helpMenu.menu);
 
@@ -390,6 +395,97 @@ define([
             $container.addClass('cp-app-readonly');
         });
 
+        var getSelectedElement = function () {
+            var node = document.getSelection().anchorNode;
+            return (node.nodeType === 3 ? node.parentNode : node);
+        };
+        var getCursor = function () {
+            if (!kanban || !kanban.inEditMode) { return; }
+            try {
+                var el = getSelectedElement();
+                var input = $(el).is('input') ? el : $(el).find('input')[0];
+                if (!input) { return; }
+                var $input = $(input);
+
+                var pos;
+                var $item = $(el).closest('.kanban-item');
+                if ($item.length) {
+                    pos = kanban.findElementPosition($item[0]);
+                }
+                var board = $input.closest('.kanban-board').attr('data-id');
+                var val = ($input.val && $input.val()) || '';
+                var start = input.selectionStart;
+                var end = input.selectionEnd;
+
+
+                var boardEl = kanban.options.boards.find(function (b) {
+                    return b.id === board;
+                });
+                var oldVal = ((pos ? boardEl.item[pos] : boardEl) || {}).title;
+
+                return {
+                    board: board,
+                    pos: pos,
+                    value: val,
+                    start: start,
+                    end: end,
+                    oldValue: oldVal
+                };
+            } catch (e) {
+                return {};
+            }
+        };
+        var restoreCursor = function (data) {
+            try {
+                var boardEl = kanban.options.boards.find(function (b) {
+                    return b.id === data.board;
+                });
+                if (!boardEl) { return; }
+
+                var $board = $('.kanban-board[data-id="'+data.board+'"');
+
+                // Editing a board title...
+                if (!data.pos && $board.length) {
+                    if (boardEl.title !== data.oldValue) { return; }
+                    $board.find('.kanban-title-board').click();
+                    var $boardInput = $board.find('.kanban-title-board input');
+                    $boardInput.val(data.value);
+                    $boardInput[0].selectionStart = data.start;
+                    $boardInput[0].selectionEnd = data.end;
+                    return;
+                }
+                // Editing a deleted board title: abort
+                if (!data.pos) {
+                    return;
+                }
+
+                // An item was added: add a new item
+                if (!data.oldValue) {
+                    $board.find('.kanban-title-button.fa-plus').click();
+                    var $newInput = $board.find('.kanban-item:last-child input');
+                    $newInput.val(data.value);
+                    $newInput[0].selectionStart = data.start;
+                    $newInput[0].selectionEnd = data.end;
+                    return;
+                }
+
+                // An item was edited: click on the correct item
+                var newVal = boardEl.item[data.pos];
+                if (!newVal || newVal.title !== data.oldValue) { return; }
+                var $el = $('.kanban-board[data-id="' + data.board + '"]')
+                            .find('.kanban-item:nth-child('+(data.pos + 1)+')');
+                $el.find('.kanban-item-text').click();
+                var $input = $el.find('input');
+                if ($input.length) {
+                    $input.val(data.value);
+                    $input[0].selectionStart = data.start;
+                    $input[0].selectionEnd = data.end;
+                }
+            } catch (e) {
+                return;
+            }
+        };
+
         framework.onContentUpdate(function (newContent) {
             // Init if needed
             if (!kanban) {
@@ -404,11 +500,12 @@ define([
             var remoteContent = newContent.content;
 
             if (Sortify(currentContent) !== Sortify(remoteContent)) {
-                // reinit kanban (TODO: optimize to diff only)
+                var cursor = getCursor();
                 verbose("Content is different.. Applying content");
                 kanban.setBoards(remoteContent);
                 kanban.inEditMode = false;
                 addRemoveItemButton(framework, kanban);
+                restoreCursor(cursor);
             }
         });
 
