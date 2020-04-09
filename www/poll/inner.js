@@ -13,6 +13,7 @@ define([
     '/common/sframe-common-codemirror.js',
     '/common/common-thumbnail.js',
     '/common/common-interface.js',
+    '/common/common-ui-elements.js',
     '/common/hyperscript.js',
     '/customize/messages.js',
     'cm/lib/codemirror',
@@ -42,6 +43,7 @@ define([
     SframeCM,
     Thumb,
     UI,
+    UIElements,
     h,
     Messages,
     CMeditor,
@@ -792,6 +794,11 @@ define([
         var userDoc = JSON.stringify(proxy);
         if (userDoc === "" || userDoc === "{}") { isNew = true; }
 
+        if (APP.toolbar && APP.rt.cpCnInner) {
+            // Check if we have a new chainpad instance
+            APP.toolbar.resetChainpad(APP.rt.cpCnInner.chainpad);
+        }
+
         if (!isNew) {
             if (proxy.info) {
                 // Migration
@@ -1059,13 +1066,6 @@ define([
         common.openPadChat(function () {});
 
         UI.removeLoadingScreen();
-        var privateDat = metadataMgr.getPrivateData();
-        var skipTemp = Util.find(privateDat,
-            ['settings', 'general', 'creation', 'noTemplate']);
-        var skipCreation = Util.find(privateDat, ['settings', 'general', 'creation', 'skip']);
-        if (isNew && (!AppConfig.displayCreationScreen || (!skipTemp && skipCreation))) {
-            common.openTemplatePicker();
-        }
     };
 
     var onError = function (info) {
@@ -1098,13 +1098,13 @@ define([
             });
         }
         setEditable(false);
-        //UI.alert(Messages.common_connectionLost, undefined, true);
+        //UIElements.disconnectAlert();
     };
 
     var onReconnect = function () {
         if (APP.unrecoverable) { return; }
         setEditable(true);
-        //UI.findOKButton().click();
+        //UIElements.reconnectAlert();
     };
 
     var getHeadingText = function () {
@@ -1169,6 +1169,8 @@ define([
         var $forgetPad = common.createButton('forget', true, {}, forgetCb);
         $rightside.append($forgetPad);
 
+        var $access = common.createButton('access', true);
+        $drawer.append($access);
         var $properties = common.createButton('properties', true);
         $drawer.append($properties);
 
@@ -1181,6 +1183,9 @@ define([
             var $templateButton = common.createButton('template', true, templateObj);
             $rightside.append($templateButton);
         }
+
+        var $copy = common.createButton('copy', true);
+        $drawer.append($copy);
 
         /* add an export button */
         var $export = common.createButton('export', true, {}, exportFile);

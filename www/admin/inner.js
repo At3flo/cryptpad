@@ -43,6 +43,7 @@ define([
         'stats': [
             'cp-admin-active-sessions',
             'cp-admin-active-pads',
+            'cp-admin-open-files',
             'cp-admin-registered',
             'cp-admin-disk-usage',
         ],
@@ -119,6 +120,17 @@ define([
         });
         return $div;
     };
+    create['open-files'] = function () {
+        var key = 'open-files';
+        var $div = makeBlock(key);
+        sFrameChan.query('Q_ADMIN_RPC', {
+            cmd: 'GET_FILE_DESCRIPTOR_COUNT',
+        }, function (e, data) {
+            console.log(e, data);
+            $div.append(h('pre', String(data)));
+        });
+        return $div;
+    };
     create['registered'] = function () {
         var key = 'registered';
         var $div = makeBlock(key);
@@ -172,6 +184,12 @@ define([
         if (!supportKey || !APP.privateKey) { return; }
         var $container = makeBlock('support-list');
         var $div = $(h('div.cp-support-container')).appendTo($container);
+
+        var metadataMgr = common.getMetadataMgr();
+        var privateData = metadataMgr.getPrivateData();
+        var cat = privateData.category || '';
+        var linkedId = cat.indexOf('-') !== -1 && cat.slice(8);
+
         var hashesById = {};
 
         var reorder = function () {
@@ -199,6 +217,12 @@ define([
                 $div.find('[data-id="'+id+'"]').css('order', i);
             });
         };
+
+        var to = Util.throttle(function () {
+            var $ticket = $div.find('.cp-support-list-ticket[data-id="'+linkedId+'"]');
+            $ticket[0].scrollIntoView();
+            linkedId = undefined;
+        }, 100);
 
         // Register to the "support" mailbox
         common.mailbox.subscribe(['supportadmin'], {
@@ -246,6 +270,8 @@ define([
                 }
                 $ticket.append(APP.support.makeMessage(content, hash));
                 reorder();
+
+                if (linkedId) { to(); }
             }
         });
         return $container;
@@ -312,6 +338,9 @@ define([
         var metadataMgr = common.getMetadataMgr();
         var privateData = metadataMgr.getPrivateData();
         var active = privateData.category || 'general';
+        if (active.indexOf('-') !== -1) {
+            active = active.split('-')[0];
+        }
         common.setHash(active);
         Object.keys(categories).forEach(function (key) {
             var $category = $('<div>', {'class': 'cp-sidebarlayout-category'}).appendTo($categories);

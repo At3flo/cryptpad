@@ -10,6 +10,7 @@ define([
     '/common/common-ui-elements.js',
     '/common/common-realtime.js',
     '/common/clipboard.js',
+    '/common/inner/common-mediatag.js',
     '/common/hyperscript.js',
     '/customize/messages.js',
     '/customize/application_config.js',
@@ -36,6 +37,7 @@ define([
     UIElements,
     Realtime,
     Clipboard,
+    MT,
     h,
     Messages,
     AppConfig,
@@ -201,7 +203,7 @@ define([
             // Add friend message
             APP.$friend.append(h('p.cp-app-profile-friend', [
                 h('i.fa.fa-address-book'),
-                Messages._getKey('profile_friend', [name])
+                Messages._getKey('isContact', [name])
             ]));
             if (!friends[data.curvePublic].notifications) { return; }
             // Add unfriend button
@@ -351,7 +353,7 @@ define([
         displayAvatar();
         if (APP.readOnly) { return; }
 
-        var data = UIElements.addAvatar(common, function (ev, data) {
+        var data = MT.addAvatar(common, function (ev, data) {
             var old = common.getMetadataMgr().getUserData().avatar;
             var todo = function () {
                 APP.module.execCommand("SET", {
@@ -457,6 +459,35 @@ define([
         APP.editor.save();
     };
 
+    var addPublicKey = function ($container) {
+        if (!APP.readOnly) { return; }
+        if (!Messages.profile_copyKey) { return; }
+
+        var $div = $(h('div.cp-sidebarlayout-element')).appendTo($container);
+        APP.$edPublic = $('<button>', {
+            'class': 'btn btn-success',
+        }).append(h('i.fa.fa-key'))
+          .append(h('span', Messages.profile_copyKey))
+          .click(function () {
+            if (!APP.getEdPublic) { return; }
+            APP.getEdPublic();
+        }).appendTo($div).hide();
+    };
+    var setPublicKeyButton = function (data) {
+        if (!data.edPublic || APP.getEdPublic || !APP.readOnly) { return; }
+        if (!Messages.profile_copyKey) { return; }
+        APP.$edPublic.show();
+        APP.getEdPublic = function () {
+            var metadataMgr = APP.common.getMetadataMgr();
+            var privateData = metadataMgr.getPrivateData();
+            var name = data.name.toLowerCase().replace(/[^a-zA-Z0-9]+/g, "-");
+            var ed = data.edPublic.replace(/\//g, '-');
+            var url = privateData.origin + '/user/#/1/' + name + '/' + ed;
+            var success = Clipboard.copy(url);
+            if (success) { UI.log(Messages.shareSuccess); }
+        };
+    };
+
     var createLeftside = function () {
         var $categories = $('<div>', {'class': 'cp-sidebarlayout-categories'}).appendTo(APP.$leftside);
         var $category = $('<div>', {'class': 'cp-sidebarlayout-category'}).appendTo($categories);
@@ -477,6 +508,7 @@ define([
             addFriendRequest($rightside);
             addMuteButton($rightside);
             addDescription(APP.$rightside);
+            addPublicKey($rightside);
             addViewButton($rightside);
             APP.initialized = true;
             createLeftside();
@@ -490,6 +522,7 @@ define([
         refreshDescription(data);
         refreshFriendRequest(data);
         refreshMute(data);
+        setPublicKeyButton(data);
     };
 
     var createToolbar = function () {
@@ -568,6 +601,29 @@ define([
                 UI.removeLoadingScreen();
             });
             return;
+        }
+
+        if (!common.isLoggedIn()) {
+            var login = h('button.cp-corner-primary', Messages.login_login);
+            var register = h('button.cp-corner-primary', Messages.login_register);
+            var cancel = h('button.cp-corner-cancel', Messages.cancel);
+            var actions = h('div', [cancel, register, login]);
+            var modal = UI.cornerPopup(Messages.profile_login, actions, '', {alt: true});
+            $(register).click(function () {
+                common.setLoginRedirect(function () {
+                    common.gotoURL('/register/');
+                });
+                modal.delete();
+            });
+            $(login).click(function () {
+                common.setLoginRedirect(function () {
+                    common.gotoURL('/login/');
+                });
+                modal.delete();
+            });
+            $(cancel).click(function () {
+                modal.delete();
+            });
         }
 
         var listmapConfig = {

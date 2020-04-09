@@ -9,6 +9,7 @@ define([
     var requireConfig = RequireConfig();
 
     // Loaded in load #2
+    var hash, href;
     nThen(function (waitFor) {
         DomReady.onReady(waitFor());
     }).nThen(function (waitFor) {
@@ -19,6 +20,13 @@ define([
         };
         window.rc = requireConfig;
         window.apiconf = ApiConfig;
+
+        // Hidden hash
+        hash = window.location.hash;
+        href = window.location.href;
+        if (window.history && window.history.replaceState && hash) {
+            window.history.replaceState({}, window.document.title, '#');
+        }
         document.getElementById('sbox-iframe').setAttribute('src',
             ApiConfig.httpSafeOrigin + window.location.pathname + 'inner.html?' +
                 requireConfig.urlArgs + '#' + encodeURIComponent(JSON.stringify(req)));
@@ -53,6 +61,7 @@ define([
                     if (e) { return void cb(e); }
                     Cryptpad.setPadAttribute('lastVersion', data.url, cb);
                 });
+                Cryptpad.setPadAttribute('lastCpHash', data.hash, cb);
             });
             sframeChan.on('Q_OO_OPENCHANNEL', function (data, cb) {
                 Cryptpad.getPadAttribute('rtChannel', function (err, res) {
@@ -144,6 +153,8 @@ define([
             });
         };
         SFCommonO.start({
+            hash: hash,
+            href: href,
             type: 'oo',
             useCreationScreen: true,
             addData: addData,

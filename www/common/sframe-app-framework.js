@@ -131,6 +131,8 @@ define([
             if (state === STATE.INFINITE_SPINNER && newState !== STATE.READY) { return; }
             if (newState === STATE.INFINITE_SPINNER || newState === STATE.DELETED) {
                 state = newState;
+            } else if (newState === STATE.ERROR) {
+                state = newState;
             } else if (state === STATE.DISCONNECTED && newState !== STATE.INITIALIZING) {
                 throw new Error("Cannot transition from DISCONNECTED to " + newState); // FIXME we are getting "DISCONNECTED to READY" on prod
             } else if (state !== STATE.READY && newState === STATE.HISTORY_MODE) {
@@ -161,6 +163,10 @@ define([
                 }
                 case STATE.ERROR: {
                     evStart.reg(function () {
+                        if (text === 'ERESTRICTED') {
+                            toolbar.failed(true);
+                            return;
+                        }
                         toolbar.errorState(true, text);
                         var msg = Messages.chainpadError;
                         UI.errorLoadingScreen(msg, true, true);
@@ -169,6 +175,10 @@ define([
                 }
                 case STATE.FORGOTTEN: {
                     evStart.reg(function () { toolbar.forgotten(); });
+                    break;
+                }
+                case STATE.FORBIDDEN: {
+                    evStart.reg(function () { toolbar.deleted(); });
                     break;
                 }
                 case STATE.DELETED: {
@@ -315,6 +325,11 @@ define([
 
             UI.updateLoadingProgress({ state: -1 }, false);
 
+            if (toolbar) {
+                // Check if we have a new chainpad instance
+                toolbar.resetChainpad(cpNfInner.chainpad);
+            }
+
             var newPad = false;
             if (newContentStr === '') { newPad = true; }
 
@@ -354,6 +369,9 @@ define([
             }).nThen(function () {
                 stateChange(STATE.READY);
                 firstConnection = false;
+
+                oldContent = undefined;
+
                 if (!readOnly) { onLocal(); }
                 evOnReady.fire(newPad);
 
@@ -384,26 +402,24 @@ define([
                         Thumb.initPadThumbnails(common, options.thumbnail);
                     }
                 }
-
-                var skipTemp = Util.find(privateDat, ['settings', 'general', 'creation', 'noTemplate']);
-                var skipCreation = Util.find(privateDat, ['settings', 'general', 'creation', 'skip']);
-                if (newPad && (!AppConfig.displayCreationScreen || (!skipTemp && skipCreation))) {
-                    common.openTemplatePicker();
-                }
             });
         };
         var onConnectionChange = function (info) {
             if (state === STATE.DELETED) { return; }
             stateChange(info.state ? STATE.INITIALIZING : STATE.DISCONNECTED, info.permanent);
             /*if (info.state) {
-                UI.findOKButton().click();
+                UIElements.reconnectAlert();
             } else {
-                UI.alert(Messages.common_connectionLost, undefined, true);
+                UIElements.disconnectAlert();
             }*/
         };
 
         var onError = function (err) {
-            common.onServerError(err, toolbar, function () {
+            common.onServerError(err, null, function () {
+                if (err.type === 'ERESTRICTED') {
+                    stateChange(STATE.ERROR, err.type);
+                    return;
+                }
                 stateChange(STATE.DELETED);
             });
         };
@@ -503,18 +519,23 @@ define([
                 }
             });
             $embedButton = common.createButton('mediatag', true).click(function () {
-                common.openFilePicker({
+                var cfg = {
                     types: ['file'],
                     where: ['root']
-                });
+                };
+                if ($embedButton.data('filter')) {
+                    cfg.filter = $embedButton.data('filter');
+                }
+                common.openFilePicker(cfg);
             }).appendTo(toolbar.$rightside).hide();
         };
-        var setMediaTagEmbedder = function (mte) {
+        var setMediaTagEmbedder = function (mte, filter) {
             if (!common.isLoggedIn()) { return; }
             if (!mte || readOnly) {
                 $embedButton.hide();
                 return;
             }
+            if (filter) { $embedButton.data('filter', filter); }
             $embedButton.show();
             mediaTagEmbedder = mte;
         };
@@ -674,6 +695,9 @@ define([
             $hist.addClass('cp-hidden-if-readonly');
             toolbar.$drawer.append($hist);
 
+            var $copy = common.createButton('copy', true);
+            toolbar.$drawer.append($copy);
+
             if (!cpNfInner.metadataMgr.getPrivateData().isTemplate) {
                 var templateObj = {
                     rt: cpNfInner.chainpad,
@@ -699,6 +723,8 @@ define([
 
             var $properties = common.createButton('properties', true);
             toolbar.$drawer.append($properties);
+            var $access = common.createButton('access', true);
+            toolbar.$drawer.append($access);
 
             createFilePicker();
 

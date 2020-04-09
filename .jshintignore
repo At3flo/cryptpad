@@ -9,7 +9,7 @@ www/common/onlyoffice/sdkjs
 www/common/onlyoffice/web-apps
 www/common/onlyoffice/x2t
 www/common/onlyoffice/v1
-www/common/onlyoffice/v2
+www/common/onlyoffice/v2*
 
 server.js
 www/common/old-media-tag.js
@@ -34,4 +34,4 @@ customize/
 www/debug/chainpad.dist.js
 
 www/pad/mathjax/
-www/code/mermaid.js
+www/code/mermaid*.js

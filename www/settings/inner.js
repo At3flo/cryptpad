@@ -48,30 +48,27 @@ define([
 
     var categories = {
         'account': [
+            'cp-settings-own-drive',
             'cp-settings-info-block',
             'cp-settings-displayname',
             'cp-settings-language-selector',
             'cp-settings-resettips',
-            'cp-settings-logout-everywhere',
-            'cp-settings-autostore',
-            'cp-settings-userfeedback',
             'cp-settings-change-password',
-            'cp-settings-migrate',
-            'cp-settings-backup',
             'cp-settings-delete'
         ],
-        'creation': [
-            'cp-settings-creation-owned',
-            'cp-settings-creation-expire',
-            'cp-settings-creation-skip',
-            'cp-settings-creation-template'
+        'security': [
+            'cp-settings-logout-everywhere',
+            'cp-settings-autostore',
+            'cp-settings-safe-links',
+            'cp-settings-userfeedback',
         ],
         'drive': [
             'cp-settings-drive-duplicate',
             'cp-settings-thumbnails',
             'cp-settings-drive-backup',
             'cp-settings-drive-import-local',
-            'cp-settings-drive-reset'
+            'cp-settings-trim-history'
+            //'cp-settings-drive-reset'
         ],
         'cursor': [
             'cp-settings-cursor-color',
@@ -98,9 +95,6 @@ define([
         }
     };
 
-    if (!AppConfig.displayCreationScreen) {
-        delete categories.creation;
-    }
     if (AppConfig.disableFeedback) {
         var feedbackIdx = categories.account.indexOf('cp-settings-userfeedback');
         categories.account.splice(feedbackIdx, 1);
@@ -114,6 +108,47 @@ define([
     }
 
     var create = {};
+
+    var SPECIAL_HINTS_HANDLER = {
+        safeLinks: function () {
+            return $('<span>', {'class': 'cp-sidebarlayout-description'})
+                .html(Messages._getKey('settings_safeLinksHint', ['<span class="fa fa-shhare-alt"></span>']));
+        },
+    };
+
+    var DEFAULT_HINT_HANDLER = function (safeKey) {
+        return $('<span>', {'class': 'cp-sidebarlayout-description'})
+            .text(Messages['settings_'+safeKey+'Hint'] || 'Coming soon...');
+    };
+
+    var makeBlock = function (key, getter, full) {
+        var safeKey = key.replace(/-([a-z])/g, function (g) { return g[1].toUpperCase(); });
+
+        create[key] = function () {
+            var $div = $('<div>', {'class': 'cp-settings-' + key + ' cp-sidebarlayout-element'});
+            if (full) {
+                $('<label>').text(Messages['settings_'+safeKey+'Title'] || key).appendTo($div);
+
+                // if this block's hint needs a special renderer, then create it in SPECIAL_HINTS_HANLDER
+                // otherwise the default will be used
+                var hintFunction = (typeof(SPECIAL_HINTS_HANDLER[safeKey]) === 'function')?
+                    SPECIAL_HINTS_HANDLER[safeKey]:
+                    DEFAULT_HINT_HANDLER;
+
+                hintFunction(safeKey).appendTo($div);
+            }
+            getter(function (content) {
+                if (content === false) {
+                    $div.remove();
+                    $div = undefined;
+                    return;
+                }
+                $div.append(content);
+            }, $div);
+            return $div;
+        };
+    };
+
 
     // Account settings
 
@@ -482,19 +517,12 @@ define([
         return $div;
     };
 
-    create['migrate'] = function () {
-        if (privateData.isDriveOwned) { return; }
-        if (!common.isLoggedIn()) { return; }
+    makeBlock('own-drive', function (cb, $div) {
+        if (privateData.isDriveOwned || !common.isLoggedIn()) {
+            return void cb(false);
+        }
 
-        var $div = $('<div>', { 'class': 'cp-settings-migrate cp-sidebarlayout-element'});
-
-        $('<span>', {'class': 'label'}).text(Messages.settings_ownDriveTitle).appendTo($div);
-
-        $('<span>', {'class': 'cp-sidebarlayout-description'})
-            .append(Messages.settings_ownDriveHint).appendTo($div);
-
-        var $ok = $('<span>', {'class': 'fa fa-check', title: Messages.saved});
-        var $spinner = $('<span>', {'class': 'fa fa-spinner fa-pulse'});
+        $div.addClass('alert alert-warning');
 
         var form = h('div', [
             UI.passwordInput({
@@ -503,13 +531,13 @@ define([
             }, true),
             h('button.btn.btn-primary', Messages.settings_ownDriveButton)
         ]);
-
-        $(form).appendTo($div);
+        var $form = $(form);
+        var spinner = UI.makeSpinner($form);
 
         var todo = function () {
-            var password = $(form).find('#cp-settings-migrate-password').val();
+            var password = $form.find('#cp-settings-migrate-password').val();
             if (!password) { return; }
-            $spinner.show();
+            spinner.spin();
             UI.confirm(Messages.settings_ownDriveConfirm, function (yes) {
                 if (!yes) { return; }
                 var data = {
@@ -523,16 +551,15 @@ define([
                 sframeChan.query('Q_CHANGE_USER_PASSWORD', data, function (err, obj) {
                     UI.removeLoadingScreen();
                     if (err || obj.error) { return UI.alert(Messages.settings_changePasswordError); }
-                    $ok.show();
-                    $spinner.hide();
+                    spinner.done();
                 });
             });
         };
 
-        $(form).find('button').click(function () {
+        $form.find('button').click(function () {
             todo();
         });
-        $(form).find('input').keydown(function (e) {
+        $form.find('input').keydown(function (e) {
             // Save on Enter
             if (e.which === 13) {
                 e.preventDefault();
@@ -541,247 +568,38 @@ define([
             }
         });
 
-        $spinner.hide().appendTo($div);
-        $ok.hide().appendTo($div);
 
-        return $div;
-    };
+        cb(form);
+    }, true);
 
-    // Pad Creation settings
+    // Security
 
-    var setHTML = function (e, html) {
-        e.innerHTML = html;
-        return e;
-    };
-    create['creation-owned'] = function () {
-        if (!common.isLoggedIn()) { return; }
-        var owned = h('div.cp-settings-creation-owned.cp-sidebarlayout-element', [
-            h('label', [
-                Messages.creation_ownedTitle
-            ]),
-            setHTML(h('p.cp-sidebarlayout-description'),
-                    Messages.creation_owned1 + '<br>' + Messages.creation_owned2),
-            h('input#cp-creation-owned-true.cp-creation-owned-value', {
-                type: 'radio',
-                name: 'cp-creation-owned',
-                value: 1,
-                checked: 'checked'
-            }),
-            h('label', { 'for': 'cp-creation-owned-true' }, Messages.creation_ownedTrue),
-            h('input#cp-creation-owned-false.cp-creation-owned-value', {
-                type: 'radio',
-                name: 'cp-creation-owned',
-                value: 0,
-            }),
-            h('label', { 'for': 'cp-creation-owned-false' }, Messages.creation_ownedFalse),
-            h('span.fa.fa-check', {title: Messages.saved}),
-            h('span.fa.fa-spinner.fa-pulse'),
-        ]);
+    makeBlock('safe-links', function (cb) {
 
-        var $owned = $(owned);
+        var $cbox = $(UI.createCheckbox('cp-settings-safe-links',
+                                   Messages.settings_safeLinksCheckbox,
+                                   false, { label: {class: 'noTitle'} }));
 
-        var $ok = $owned.find('.fa-check').hide();
-        var $spinner = $owned.find('.fa-spinner').hide();
+        var spinner = UI.makeSpinner($cbox);
 
-        $owned.find('input').change(function () {
-            $spinner.show();
-            $ok.hide();
-            var val = parseInt($owned.find('[name="cp-creation-owned"]:checked').val());
-            common.setAttribute(['general', 'creation', 'owned'], val, function (e) {
-                if (e) { return void console.error(e); }
-                $spinner.hide();
-                $ok.show();
+        // Checkbox: "Enable safe links"
+        var $checkbox = $cbox.find('input').on('change', function () {
+            spinner.spin();
+            var val = !$checkbox.is(':checked');
+            common.setAttribute(['security', 'unsafeLinks'], val, function () {
+                spinner.done();
             });
         });
-        common.getAttribute(['general', 'creation', 'owned'], function (e, val) {
-            if (!val && typeof val !== "undefined") {
-                $owned.find('#cp-creation-owned-false').attr('checked', true);
+
+        common.getAttribute(['security', 'unsafeLinks'], function (e, val) {
+            if (e) { return void console.error(e); }
+            if (val === false) {
+                $checkbox.attr('checked', 'checked');
             }
         });
 
-        return $owned;
-    };
-    create['creation-expire'] = function () {
-        if (!common.isLoggedIn()) { return; }
-        var expire = h('div.cp-settings-creation-expire.cp-sidebarlayout-element', [
-            h('label', [
-                Messages.creation_expireTitle
-            ]),
-            setHTML(h('p.cp-sidebarlayout-description'),
-                    Messages.creation_expire1 + '<br>' + Messages.creation_expire2),
-            h('input#cp-creation-expire-false.cp-creation-expire-value', {
-                type: 'radio',
-                name: 'cp-creation-expire',
-                value: 0,
-                checked: 'checked'
-            }),
-            h('label', { 'for': 'cp-creation-expire-false' }, Messages.creation_expireFalse),
-            h('input#cp-creation-expire-true.cp-creation-expire-value', {
-                type: 'radio',
-                name: 'cp-creation-expire',
-                value: 1
-            }),
-            h('label', { 'for': 'cp-creation-expire-true' }, [
-                Messages.creation_expireTrue,
-                h('span.cp-creation-expire-picker', [
-                    h('input#cp-creation-expire-val', {
-                        type: "number",
-                        min: 1,
-                        max: 100,
-                        value: 3
-                    }),
-                    h('select#cp-creation-expire-unit', [
-                        h('option', { value: 'hour' }, Messages.creation_expireHours),
-                        h('option', { value: 'day' }, Messages.creation_expireDays),
-                        h('option', {
-                            value: 'month',
-                            selected: 'selected'
-                        }, Messages.creation_expireMonths)
-                    ])
-                ])
-            ]),
-            h('span.fa.fa-check', {title: Messages.saved}),
-            h('span.fa.fa-spinner.fa-pulse'),
-        ]);
-
-        var $expire = $(expire);
-
-        var $ok = $expire.find('.fa-check').hide();
-        var $spinner = $expire.find('.fa-spinner').hide();
-
-        var getValue = function () {
-            if(!parseInt($expire.find('[name="cp-creation-expire"]:checked').val())) { return 0; }
-            var unit = 0;
-            switch ($expire.find('#cp-creation-expire-unit').val()) {
-                case "hour" : unit = 3600;           break;
-                case "day"  : unit = 3600 * 24;      break;
-                case "month": unit = 3600 * 24 * 30; break;
-                default: unit = 0;
-            }
-            return ($expire.find('#cp-creation-expire-val').val() || 0) * unit;
-        };
-        $expire.find('input, select').change(function () {
-            $spinner.show();
-            $ok.hide();
-            common.setAttribute(['general', 'creation', 'expire'], getValue(), function (e) {
-                if (e) { return void console.error(e); }
-                $spinner.hide();
-                $ok.show();
-            });
-        });
-        common.getAttribute(['general', 'creation', 'expire'], function (e, val) {
-            UIElements.setExpirationValue(val, $expire);
-        });
-
-        return $expire;
-    };
-    create['creation-skip'] = function () {
-        if (!common.isLoggedIn()) { return; }
-        var skip = h('div.cp-settings-creation-skip.cp-sidebarlayout-element', [
-            h('label', [
-                Messages.settings_creationSkip
-            ]),
-            setHTML(h('p.cp-sidebarlayout-description'), Messages.settings_creationSkipHint),
-            h('input#cp-creation-skip-true.cp-creation-skip-value', {
-                type: 'radio',
-                name: 'cp-creation-skip',
-                value: 1,
-            }),
-            h('label', { 'for': 'cp-creation-skip-true' }, Messages.settings_creationSkipTrue),
-            h('input#cp-creation-skip-false.cp-creation-skip-value', {
-                type: 'radio',
-                name: 'cp-creation-skip',
-                value: 0,
-                checked: 'checked'
-            }),
-            h('label', { 'for': 'cp-creation-skip-false' }, Messages.settings_creationSkipFalse),
-            h('span.fa.fa-check', {title: Messages.saved}),
-            h('span.fa.fa-spinner.fa-pulse'),
-        ]);
-
-        var $div = $(skip);
-
-        var $ok = $div.find('.fa-check').hide();
-        var $spinner = $div.find('.fa-spinner').hide();
-
-        $div.find('input').change(function () {
-            $spinner.show();
-            $ok.hide();
-            var val = parseInt($div.find('[name="cp-creation-skip"]:checked').val());
-            // If we don't skip the pad creation screen, we dont' need settings to hide the templates
-            // modal
-            if (!val) {
-                $('.cp-settings-creation-template').addClass('cp-settings-creation-skipped');
-            } else {
-                $('.cp-settings-creation-template').removeClass('cp-settings-creation-skipped');
-            }
-            common.setAttribute(['general', 'creation', 'skip'], val, function (e) {
-                if (e) { return void console.error(e); }
-                $spinner.hide();
-                $ok.show();
-            });
-        });
-        common.getAttribute(['general', 'creation', 'skip'], function (e, val) {
-            if (val) {
-                $div.find('#cp-creation-skip-true').attr('checked', true);
-                return;
-            }
-            // If we don't skip the pad creation screen, we dont' need settings to hide the templates
-            // modal
-            $('.cp-settings-creation-template').addClass('cp-settings-creation-skipped');
-        });
-
-        return $div;
-    };
-    create['creation-template'] = function () {
-        var skip = h('div.cp-settings-creation-template.cp-sidebarlayout-element', [
-            h('label', [
-                Messages.settings_templateSkip
-            ]),
-            setHTML(h('p.cp-sidebarlayout-description'), Messages.settings_templateSkipHint),
-            h('input#cp-creation-template-true.cp-creation-template-value', {
-                type: 'radio',
-                name: 'cp-creation-template',
-                value: 1,
-            }),
-            h('label', { 'for': 'cp-creation-template-true' }, Messages.settings_creationSkipTrue),
-            h('input#cp-creation-template-false.cp-creation-template-value', {
-                type: 'radio',
-                name: 'cp-creation-template',
-                value: 0,
-                checked: 'checked'
-            }),
-            h('label', { 'for': 'cp-creation-template-false' }, Messages.settings_creationSkipFalse),
-            h('span.fa.fa-check', {title: Messages.saved}),
-            h('span.fa.fa-spinner.fa-pulse'),
-        ]);
-
-        var $div = $(skip);
-
-        var $ok = $div.find('.fa-check').hide();
-        var $spinner = $div.find('.fa-spinner').hide();
-
-        $div.find('input').change(function () {
-            $spinner.show();
-            $ok.hide();
-            var val = parseInt($div.find('[name="cp-creation-template"]:checked').val());
-            common.setAttribute(['general', 'creation', 'noTemplate'], val, function (e) {
-                if (e) { return void console.error(e); }
-                $spinner.hide();
-                $ok.show();
-            });
-        });
-        common.getAttribute(['general', 'creation', 'noTemplate'], function (e, val) {
-            if (val) {
-                $div.find('#cp-creation-template-true').attr('checked', true);
-            }
-        });
-
-        return $div;
-    };
-
-
-
+        cb($cbox);
+    }, true);
 
     // Drive settings
 
@@ -1148,6 +966,82 @@ define([
         return $div;
     };
 
+    var redrawTrimHistory = function (cb, $div) {
+        var spinner = UI.makeSpinner();
+        var button = h('button.btn.btn-danger-alt', {
+            disabled: 'disabled'
+        }, Messages.trimHistory_button);
+        var currentSize = h('p', $(spinner.spinner).clone()[0]);
+        var content = h('div#cp-settings-trim-container', [
+            currentSize,
+            button,
+            spinner.ok,
+            spinner.spinner
+        ]);
+
+        if (!privateData.isDriveOwned) {
+            var href = privateData.origin + privateData.pathname + '#' + 'account';
+            $(currentSize).html(Messages.trimHistory_needMigration);
+            $(currentSize).find('a').prop('href', href).click(function (e) {
+                e.preventDefault();
+                $('.cp-sidebarlayout-category[data-category="account"]').click();
+            });
+            return void cb(content);
+        }
+
+
+        var $button = $(button);
+        var size;
+        var channels = [];
+        nThen(function (waitFor) {
+            APP.history.execCommand('GET_HISTORY_SIZE', {
+                account: true,
+                channels: []
+            }, waitFor(function (obj) {
+                if (obj && obj.error) {
+                    waitFor.abort();
+                    var error = h('div.alert.alert-danger', Messages.trimHistory_getSizeError);
+                    $(content).empty().append(error);
+                    return;
+                }
+                channels = obj.channels;
+                size = Number(obj.size);
+            }));
+        }).nThen(function () {
+            if (!size || size < 1024) {
+                $(currentSize).html(Messages.trimHistory_noHistory);
+                return;
+            }
+            $(currentSize).html(Messages._getKey('trimHistory_currentSize', [UIElements.prettySize(size)]));
+            $button.prop('disabled', '');
+            UI.confirmButton(button, {
+                classes: 'btn-danger'
+            }, function () {
+                $button.remove();
+                spinner.spin();
+                APP.history.execCommand('TRIM_HISTORY', {
+                    channels: channels
+                }, function (obj) {
+                    if (obj && obj.error) {
+                        var error = h('div.alert.alert-danger', Messages.trimHistory_error);
+                        $(content).empty().append(error);
+                        return;
+                    }
+                    spinner.hide();
+                    redrawTrimHistory(cb, $div);
+                });
+            });
+        });
+
+        $div.find('#cp-settings-trim-container').remove();
+        cb(content);
+    };
+    makeBlock('trim-history', function (cb, $div) {
+        if (!common.isLoggedIn()) { return; }
+        redrawTrimHistory(cb, $div);
+    }, true);
+
+    /*
     create['drive-reset'] = function () {
         var $div = $('<div>', {'class': 'cp-settings-drive-reset cp-sidebarlayout-element'});
         $('<label>').text(Messages.settings_resetNewTitle).appendTo($div);
@@ -1171,6 +1065,7 @@ define([
 
         return $div;
     };
+    */
 
     // Cursor settings
 
@@ -1571,13 +1466,16 @@ define([
         APP.$usage = $('<div>', {'class': 'usage'}).appendTo(APP.$leftside);
         var active = privateData.category || 'account';
         Object.keys(categories).forEach(function (key) {
-            var $category = $('<div>', {'class': 'cp-sidebarlayout-category'}).appendTo($categories);
+            var $category = $('<div>', {
+                'class': 'cp-sidebarlayout-category',
+                'data-category': key
+            }).appendTo($categories);
             if (key === 'account') { $category.append($('<span>', {'class': 'fa fa-user-o'})); }
             if (key === 'drive') { $category.append($('<span>', {'class': 'fa fa-hdd-o'})); }
             if (key === 'cursor') { $category.append($('<span>', {'class': 'fa fa-i-cursor' })); }
             if (key === 'code') { $category.append($('<span>', {'class': 'fa fa-file-code-o' })); }
             if (key === 'pad') { $category.append($('<span>', {'class': 'fa fa-file-word-o' })); }
-            if (key === 'creation') { $category.append($('<span>', {'class': 'fa fa-plus-circle' })); }
+            if (key === 'security') { $category.append($('<span>', {'class': 'fa fa-lock' })); }
             if (key === 'subscription') { $category.append($('<span>', {'class': 'fa fa-star-o' })); }
 
             if (key === active) {
@@ -1596,9 +1494,10 @@ define([
                 showCategories(categories[key]);
             });
 
-            $category.append(Messages['settings_cat_'+key]);
+            $category.append(Messages['settings_cat_'+key] || key);
         });
         showCategories(categories[active]);
+        common.setHash(active);
     };
 
 
@@ -1628,6 +1527,7 @@ define([
         };
         APP.toolbar = Toolbar.create(configTb);
         APP.toolbar.$rightside.hide();
+        APP.history = common.makeUniversal('history');
 
         // Content
         var $rightside = APP.$rightside;
@@ -1645,6 +1545,7 @@ define([
             if (!Array.isArray(categories[cat])) { continue; }
             categories[cat].forEach(addItem);
         }
+
 
         // TODO RPC
         //obj.proxy.on('change', [], refresh);

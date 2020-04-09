@@ -193,7 +193,6 @@
     "crowdfunding_button": "Støtt CryptPad",
     "crowdfunding_popup_yes": "Gå til OpenCollective",
     "crowdfunding_popup_no": "Ikke nå",
-    "crowdfunding_popup_never": "Ikke spør igjen takk",
     "markdown_toc": "Innhold",
     "fm_expirablePad": "Denne paden vill utgå på dato den {0}",
     "admin_authError": "Kun admin-tilgang",
@@ -280,7 +279,7 @@
     "fm_fileName": "Filnavn",
     "fm_title": "Tittel",
     "fm_lastAccess": "Siste tilgang",
-    "fm_creation": "Skaperverk",
+    "fm_creation": "Opprettet",
     "fm_forbidden": "Ulovlig handling",
     "fm_originalPath": "Original filsti",
     "fm_openParent": "Vis i mappe",
@@ -305,5 +304,6 @@
     "settings_exportDescription": "Vennligst vent mens vi laster ned og dekrypterer dokumentene dine. Lukker du fanen vil du avbryte nedlastingen.",
     "settings_exportFailed": "Hvis paden trenger mer enn 1 minutt på nedlastingen så vil den desverre ikke inkluderes i eksporteringen. I stedet vil en linke til paden vises.",
     "settings_exportWarning": "NB: denne funksjonen er beta og muligens ustabil. Vi anbefaler at du holder denne fanen i fokus.",
-    "settings_exportCancel": "Er du sikker på at du vil avbryte eksporteringen? I så fall må du starte på nytt neste gang."
+    "settings_exportCancel": "Er du sikker på at du vil avbryte eksporteringen? I så fall må du starte på nytt neste gang.",
+    "editOpen": "Åpne redigert link i en ny fane"
 }

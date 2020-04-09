@@ -41,12 +41,6 @@ define([
         var cursors = {};
 
         var makeTippy = function (cursor) {
-            /*var html = '<span class="cp-cursor-avatar">';
-            if (cursor.avatar && UIElements.getAvatar(cursor.avatar)) {
-                html += UIElements.getAvatar(cursor.avatar);
-            }
-            html += cursor.name + '</span>';
-            return html;*/
             return cursor.name;
         };
 
@@ -111,10 +105,13 @@ define([
             }
         };
 
-        exp.removeCursors = function () {
+        exp.removeCursors = function (inner) {
             for (var id in cursors) {
                 deleteCursor(id);
             }
+            // If diffdom has changed the cursor element somehow, we'll have cursor elements
+            // in the dom but not in memory: remove them
+            $(inner).find('.cp-cursor-position').remove();
         };
 
         exp.cursorGetter = function (hjson) {
