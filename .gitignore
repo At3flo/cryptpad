@@ -21,3 +21,4 @@ logs/
 privileged.conf
 config/config.js
 *yolo.sh
+package-lock.json
