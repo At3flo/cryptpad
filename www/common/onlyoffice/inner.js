@@ -1,6 +1,6 @@
 define([
     'jquery',
-    '/common/toolbar3.js',
+    '/common/toolbar.js',
     'json.sortify',
     '/bower_components/nthen/index.js',
     '/common/sframe-common.js',
@@ -52,10 +52,10 @@ define([
         $: $
     };
 
-
-    var CHECKPOINT_INTERVAL = 50;
+    var CHECKPOINT_INTERVAL = 100;
     var DISPLAY_RESTORE_BUTTON = false;
     var NEW_VERSION = 2;
+    var PENDING_TIMEOUT = 30000;
 
     var debug = function (x) {
         if (!window.CP_DEV_MODE) { return; }
@@ -76,6 +76,8 @@ define([
         var privateData = metadataMgr.getPrivateData();
         var readOnly = false;
         var offline = false;
+        var ooLoaded = false;
+        var pendingChanges = {};
         var config = {};
         var content = {
             hashes: {},
@@ -89,9 +91,12 @@ define([
         var myUniqueOOId;
         var myOOId;
         var sessionId = Hash.createChannelId();
+        var cpNfInner;
 
         // This structure is used for caching media data and blob urls for each media cryptpad url
         var mediasData = {};
+
+        var startOO = function () {};
 
         var getMediasSources = APP.getMediasSources =  function() {
             content.mediasSources = content.mediasSources || {};
@@ -100,6 +105,24 @@ define([
 
         var getId = function () {
             return metadataMgr.getNetfluxId() + '-' + privateData.clientId;
+        };
+
+        var getEditor = function () {
+            return window.frames[0].editor || window.frames[0].editorCell;
+        };
+
+        var setEditable = function (state) {
+            $('#cp-app-oo-editor').find('#cp-app-oo-offline').remove();
+            /*
+            try {
+                getEditor().asc_setViewMode(!state);
+                //window.frames[0].editor.setViewModeDisconnect(true);
+            } catch (e) {}
+            */
+            if (!state && !readOnly) {
+                $('#cp-app-oo-editor').append(h('div#cp-app-oo-offline'));
+            }
+            debug(state);
         };
 
         var deleteOffline = function () {
@@ -114,6 +137,12 @@ define([
             APP.onLocal();
         };
 
+        var isRegisteredUserOnline = function () {
+            var users = metadataMgr.getMetadata().users || {};
+            return Object.keys(users).some(function (id) {
+                return users[id] && users[id].curvePublic;
+            });
+        };
         var isUserOnline = function (ooid) {
             // Remove ids for users that have left the channel
             deleteOffline();
@@ -195,10 +224,14 @@ define([
 
         var now = function () { return +new Date(); };
 
-        var getLastCp = function (old) {
+        var getLastCp = function (old, i) {
             var hashes = old ? oldHashes : content.hashes;
             if (!hashes || !Object.keys(hashes).length) { return {}; }
-            var lastIndex = Math.max.apply(null, Object.keys(hashes).map(Number));
+            i = i || 0;
+            var idx = Object.keys(hashes).map(Number).sort(function (a, b) {
+                return a-b;
+            });
+            var lastIndex = idx[idx.length - 1 - i];
             var last = JSON.parse(JSON.stringify(hashes[lastIndex]));
             return last;
         };
@@ -229,11 +262,20 @@ define([
 
         var getContent = function () {
             try {
-                return window.frames[0].editor.asc_nativeGetFile();
+                return getEditor().asc_nativeGetFile();
             } catch (e) {
                 console.error(e);
                 return;
             }
+        };
+
+        var checkDrawings = function () {
+            var editor = getEditor();
+            if (!editor) { return false; }
+            var s = editor.GetSheets();
+            return s.some(function (obj) {
+                return obj.worksheet.Drawings.length;
+            });
         };
 
         // Loading a checkpoint reorder the sheet starting from ID "5".
@@ -242,7 +284,7 @@ define([
         // loadable by users joining after the checkpoint
         var fixSheets = function () {
             try {
-                var editor = window.frames[0].editor;
+                var editor = getEditor();
                 // if we are not in the sheet app
                 // we should not call this code
                 if (typeof editor.GetSheets === 'undefined') { return; }
@@ -260,18 +302,29 @@ define([
         };
 
         var onUploaded = function (ev, data, err) {
+            content.saveLock = undefined;
             if (err) {
                 console.error(err);
                 return void UI.alert(Messages.oo_saveError);
             }
-            var i = Math.floor(ev.index / CHECKPOINT_INTERVAL);
+            // Get the last cp idx
+            var all = Object.keys(content.hashes || {}).map(Number).sort();
+            var current = all[all.length - 1] || 0;
+            // Get the expected cp idx
+            var _i = Math.floor(ev.index / CHECKPOINT_INTERVAL);
+            // Take the max of both
+            var i = Math.max(_i, current);
             content.hashes[i] = {
                 file: data.url,
                 hash: ev.hash,
                 index: ev.index
             };
             oldHashes = JSON.parse(JSON.stringify(content.hashes));
-            content.saveLock = undefined;
+            var hasDrawings = checkDrawings();
+            if (hasDrawings) {
+                content.locks = {};
+                content.ids = {};
+            }
             // If this is a migration, set the new version
             if (APP.migrate) {
                 delete content.migration;
@@ -279,7 +332,6 @@ define([
             }
             APP.onLocal();
             APP.realtime.onSettle(function () {
-                fixSheets();
                 UI.log(Messages.saved);
                 APP.realtime.onSettle(function () {
                     if (APP.migrate) {
@@ -308,12 +360,41 @@ define([
             body: $('body'),
             onUploaded: function (ev, data) {
                 if (!data || !data.url) { return; }
+                data.hash = ev.hash;
                 sframeChan.query('Q_OO_SAVE', data, function (err) {
                     onUploaded(ev, data, err);
                 });
+            },
+            onError: function (err) {
+                onUploaded(null, null, err);
             }
         };
         APP.FM = common.createFileManager(fmConfig);
+
+        // Add a lock
+        var isLockedModal = {
+            content: UI.dialog.customModal(h('div.cp-oo-x2tXls', [
+                h('span.fa.fa-spin.fa-spinner'),
+                h('span', Messages.oo_isLocked)
+            ]))
+        };
+
+        var resetData = function (blob, type) {
+            if (!isLockedModal.modal) {
+                isLockedModal.modal = UI.openCustomModal(isLockedModal.content);
+            }
+            myUniqueOOId = undefined;
+            setMyId();
+            APP.docEditor.destroyEditor(); // Kill the old editor
+            $('iframe[name="frameEditor"]').after(h('div#cp-app-oo-placeholder')).remove();
+            ooLoaded = false;
+            oldLocks = {};
+            Object.keys(pendingChanges).forEach(function (key) {
+                clearTimeout(pendingChanges[key]);
+                delete pendingChanges[key];
+            });
+            startOO(blob, type, true);
+        };
 
         var saveToServer = function () {
             var text = getContent();
@@ -324,29 +405,62 @@ define([
                 hash: ooChannel.lastHash,
                 index: ooChannel.cpIndex
             };
+            fixSheets();
+
+            var hasDrawings = checkDrawings();
+            if (hasDrawings) {
+                ooChannel.ready = false;
+                ooChannel.queue = [];
+                data.callback = function () {
+                    resetData(blob, file);
+                };
+            }
+
             APP.FM.handleFile(blob, data);
         };
+
+        var noLogin = false;
+
         var makeCheckpoint = function (force) {
-            if (!common.isLoggedIn()) { return; }
             var locked = content.saveLock;
+            var lastCp = getLastCp();
+
+            var needCp = force || ooChannel.cpIndex % CHECKPOINT_INTERVAL === 0 ||
+                        (ooChannel.cpIndex - (lastCp.index || 0)) > CHECKPOINT_INTERVAL;
+            if (!needCp) { return; }
+
             if (!locked || !isUserOnline(locked) || force) {
+                if (!common.isLoggedIn() && !isRegisteredUserOnline() && !noLogin) {
+                    var login = h('button.cp-corner-primary', Messages.login_login);
+                    var register = h('button.cp-corner-primary', Messages.login_register);
+                    var cancel = h('button.cp-corner-cancel', Messages.cancel);
+                    var actions = h('div', [cancel, register, login]);
+                    var modal = UI.cornerPopup(Messages.oo_login, actions, '', {alt: true});
+                    $(register).click(function () {
+                        common.setLoginRedirect(function () {
+                            common.gotoURL('/register/');
+                        });
+                        modal.delete();
+                    });
+                    $(login).click(function () {
+                        common.setLoginRedirect(function () {
+                            common.gotoURL('/login/');
+                        });
+                        modal.delete();
+                    });
+                    $(cancel).click(function () {
+                        modal.delete();
+                        noLogin = true;
+                    });
+                    return;
+                }
+                if (!common.isLoggedIn()) { return; }
                 content.saveLock = myOOId;
                 APP.onLocal();
                 APP.realtime.onSettle(function () {
                     saveToServer();
                 });
-                return;
             }
-            // The save is locked by someone else. If no new checkpoint is created
-            // in the next 20 to 40 secondes and the lock is kept by the same user,
-            // force the lock and make a checkpoint.
-            var saved = stringify(content.hashes);
-            var to = 20000 + (Math.random() * 20000);
-            setTimeout(function () {
-                if (stringify(content.hashes) === saved && locked === content.saveLock) {
-                    makeCheckpoint(force);
-                }
-            }, to);
         };
         var restoreLastCp = function () {
             content.saveLock = myOOId;
@@ -359,6 +473,23 @@ define([
                     url: getLastCp().file,
                 });
             });
+        };
+        // Add a timeout to check if a checkpoint was correctly saved by the locking user
+        // and "unlock the sheet" or "make a checkpoint" if needed
+        var cpTo;
+        var checkCheckpoint = function () {
+            clearTimeout(cpTo);
+            var saved = stringify(content.hashes);
+            var locked = content.saveLock;
+            var to = 20000 + (Math.random() * 20000);
+            cpTo = setTimeout(function () {
+                // If no checkpoint was added and the same user still has the lock
+                // then make a checkpoint if needed (cp interval)
+                if (stringify(content.hashes) === saved && locked === content.saveLock) {
+                    content.saveLock = undefined;
+                    makeCheckpoint();
+                }
+            }, to);
         };
 
 
@@ -498,20 +629,17 @@ define([
                     delete content.locks[id];
                 }
             });
+            if (content.saveLock && !isUserOnline(content.saveLock)) {
+                delete content.saveLock;
+            }
         };
 
         var handleAuth = function (obj, send) {
-            // OO is ready
-            ooChannel.ready = true;
-            // Get the content pushed after the latest checkpoint
-            var changes = [];
-            ooChannel.queue.forEach(function (data) {
-                Array.prototype.push.apply(changes, data.msg.changes);
-            });
+            setEditable(false);
             ooChannel.lastHash = getLastCp().hash;
             send({
                 type: "authChanges",
-                changes: changes
+                changes: []
             });
             // Answer to the auth command
             var p = getParticipants();
@@ -535,14 +663,6 @@ define([
                 type: "documentOpen",
                 data: {"type":"open","status":"ok","data":{"Editor.bin":obj.openCmd.url}}
             });
-            // Update current index
-            var last = ooChannel.queue.pop();
-            if (last) { ooChannel.lastHash = last.hash; }
-            ooChannel.cpIndex += ooChannel.queue.length;
-            // Apply existing locks
-            deleteOfflineLocks();
-            APP.onLocal();
-            handleNewLocks(oldLocks, content.locks || {});
 
             var observer = new MutationObserver(function(mutations) {
                 mutations.forEach(function(mutation) {
@@ -561,8 +681,16 @@ define([
             });
         };
 
-        // Add a lock
         var handleLock = function (obj, send) {
+            if (content.saveLock) {
+                if (!isLockedModal.modal) {
+                    isLockedModal.modal = UI.openCustomModal(isLockedModal.content);
+                }
+                setTimeout(function () {
+                    handleLock(obj, send);
+                }, 50);
+                return;
+            }
             content.locks = content.locks || {};
             // Send the lock to other users
             var msg = {
@@ -573,15 +701,37 @@ define([
             var myId = getId();
             content.locks[myId] = msg;
             oldLocks = JSON.parse(JSON.stringify(content.locks));
-            // Answer to our onlyoffice
-            send({
-                type: "getLock",
-                locks: getLock()
-            });
             // Remove old locks
             deleteOfflineLocks();
+            // Prepare callback
+            if (cpNfInner) {
+                var onPatchSent = function (again) {
+                    if (!again) { cpNfInner.offPatchSent(onPatchSent); }
+                    // Answer to our onlyoffice
+                    if (!content.saveLock) {
+                        if (isLockedModal.modal) {
+                            isLockedModal.modal.closeModal();
+                            delete isLockedModal.modal;
+                            $('#cp-app-oo-editor > iframe')[0].contentWindow.focus();
+                        }
+                        send({
+                            type: "getLock",
+                            locks: getLock()
+                        });
+                    } else {
+                        if (!isLockedModal.modal) {
+                            isLockedModal.modal = UI.openCustomModal(isLockedModal.content);
+                        }
+                        setTimeout(function () {
+                            onPatchSent(true);
+                        }, 50);
+                    }
+                };
+                cpNfInner.onPatchSent(onPatchSent);
+            }
             // Commit
             APP.onLocal();
+            APP.realtime.sync();
         };
 
         var parseChanges = function (changes) {
@@ -600,13 +750,30 @@ define([
                 };
             });
         };
+
         var handleChanges = function (obj, send) {
-            // Allow the changes
-            send({
-                type: "unSaveLock",
-                index: ooChannel.cpIndex,
-                time: +new Date()
-            });
+            // Add a new entry to the pendingChanges object.
+            // If we can't send the patch within 30s, force a page reload
+            var uid = Util.uid();
+            pendingChanges[uid] = setTimeout(function () {
+                // If we're offline, force a reload on reconnect
+                if (offline) {
+                    pendingChanges.force = true;
+                    return;
+                }
+
+                // We're online: force a reload now
+                setEditable(false);
+                UI.alert(Messages.realtime_unrecoverableError, function () {
+                    common.gotoURL();
+                });
+
+            }, PENDING_TIMEOUT);
+            if (offline) {
+                pendingChanges.force = true;
+                return;
+            }
+
             // Send the changes
             rtChannel.sendMsg({
                 type: "saveChanges",
@@ -615,16 +782,27 @@ define([
                 locks: [content.locks[getId()]],
                 excelAdditionalInfo: null
             }, null, function (err, hash) {
-                if (err) { return void console.error(err); }
+                if (err) {
+                    return void console.error(err);
+                }
+                if (pendingChanges[uid]) {
+                    clearTimeout(pendingChanges[uid]);
+                    delete pendingChanges[uid];
+                }
+                // Call unSaveLock to tell onlyoffice that the patch was sent.
+                // It will allow you to make changes to another cell.
+                // If there is an error and unSaveLock is not called, onlyoffice
+                // will try to send the patch again
+                send({
+                    type: "unSaveLock",
+                    index: ooChannel.cpIndex,
+                    time: +new Date()
+                });
                 // Increment index and update latest hash
                 ooChannel.cpIndex++;
                 ooChannel.lastHash = hash;
                 // Check if a checkpoint is needed
-                var lastCp = getLastCp();
-                if (common.isLoggedIn() && (ooChannel.cpIndex % CHECKPOINT_INTERVAL === 0 ||
-                            (ooChannel.cpIndex - lastCp.index) > CHECKPOINT_INTERVAL)) {
-                    makeCheckpoint();
-                }
+                makeCheckpoint();
                 // Remove my lock
                 delete content.locks[getId()];
                 oldLocks = JSON.parse(JSON.stringify(content.locks));
@@ -659,10 +837,12 @@ define([
                             break;
                         case "isSaveLock":
                             // TODO ping the server to check if we're online first?
-                            send({
-                                type: "saveLock",
-                                saveLock: false
-                            });
+                            if (!offline) {
+                                send({
+                                    type: "saveLock",
+                                    saveLock: false
+                                });
+                            }
                             break;
                         case "getLock":
                             handleLock(obj, send);
@@ -713,9 +893,8 @@ define([
             });
         };
 
-        var ooLoaded = false;
-        var startOO = function (blob, file) {
-            if (APP.ooconfig) { return void console.error('already started'); }
+        startOO = function (blob, file, force) {
+            if (APP.ooconfig && !force) { return void console.error('already started'); }
             var url = URL.createObjectURL(blob);
             var lock = readOnly || APP.migrate;
 
@@ -743,12 +922,14 @@ define([
                         "id": String(myOOId), //"c0c3bf82-20d7-4663-bf6d-7fa39c598b1d",
                         "firstname": metadataMgr.getUserData().name || Messages.anonymous,
                     },
-                    "mode": readOnly || lock ? "view" : "edit",
+                    "mode": "edit",
                     "lang": (navigator.language || navigator.userLanguage || '').slice(0,2)
                 },
                 "events": {
                     "onAppReady": function(/*evt*/) {
-                        var $tb = $('iframe[name="frameEditor"]').contents().find('head');
+                        var $iframe = $('iframe[name="frameEditor"]').contents();
+                        $iframe.prop('tabindex', '-1');
+                        var $tb = $iframe.find('head');
                         var css = // Old OO
                                   '#id-toolbar-full .toolbar-group:nth-child(2), #id-toolbar-full .separator:nth-child(3) { display: none; }' +
                                   '#fm-btn-save { display: none !important; }' +
@@ -783,6 +964,37 @@ define([
                         }
                     },
                     "onDocumentReady": function () {
+                        // The doc is ready, fix the worksheets IDs and push the queue
+                        fixSheets();
+                        // Push changes since last cp
+                        ooChannel.ready = true;
+                        ooChannel.queue.forEach(function (data) {
+                            ooChannel.send(data.msg);
+                        });
+                        var last = ooChannel.queue.pop();
+                        if (last) { ooChannel.lastHash = last.hash; }
+                        ooChannel.cpIndex += ooChannel.queue.length;
+                        // Apply existing locks
+                        deleteOfflineLocks();
+                        APP.onLocal();
+                        handleNewLocks(oldLocks, content.locks || {});
+                        // Allow edition
+
+                        if (lock) {
+                            setTimeout(function () {
+                                setEditable(true);
+                                getEditor().setViewModeDisconnect();
+                            }, 5000);
+                        } else {
+                            setEditable(true);
+                        }
+
+                        if (isLockedModal.modal && force) {
+                            isLockedModal.modal.closeModal();
+                            delete isLockedModal.modal;
+                            $('#cp-app-oo-editor > iframe')[0].contentWindow.focus();
+                        }
+
                         if (APP.migrate && !readOnly) {
                             var div = h('div.cp-oo-x2tXls', [
                                 h('span.fa.fa-spin.fa-spinner'),
@@ -801,8 +1013,16 @@ define([
                 if (ifr) { ifr.remove(); }
             };
 
-            common.initFilePicker({
-                onSelect: function (data) {
+            APP.AddImage = function(cb1, cb2) {
+                APP.AddImageSuccessCallback = cb1;
+                APP.AddImageErrorCallback = cb2;
+                common.openFilePicker({
+                    types: ['file'],
+                    where: ['root'],
+                    filter: {
+                        fileType: ['image/']
+                    }
+                }, function (data) {
                     if (data.type !== 'file') {
                         debug("Unexpected data type picked " + data.type);
                         return;
@@ -823,19 +1043,6 @@ define([
                             });
                         });
                     });
-                }
-            });
-
-            APP.AddImage = function(cb1, cb2) {
-                APP.AddImageSuccessCallback = cb1;
-                APP.AddImageErrorCallback = cb2;
-                common.openFilePicker({
-                    types: ['file'],
-                    where: ['root'],
-                    filter: {
-                        fileType: ['image/']
-                    }
-
                 });
             };
 
@@ -985,12 +1192,12 @@ define([
 
         var x2tSaveAndConvertData = function(data, filename, extension, finalFilename) {
             // Perform the x2t conversion
-            require(['/common/onlyoffice/x2t/x2t.js'], function() {
+            require(['/common/onlyoffice/x2t/x2t.js'], function() { // FIXME why does this fail without an access-control-allow-origin header?
                 var x2t = window.Module;
                 x2t.run();
                 if (x2tInitialized) {
                     debug("x2t runtime already initialized");
-                    x2tSaveAndConvertDataInternal(x2t, data, filename, extension, finalFilename);
+                    return void x2tSaveAndConvertDataInternal(x2t, data, filename, extension, finalFilename);
                 }
 
                 x2t.onRuntimeInitialized = function() {
@@ -1173,7 +1380,7 @@ define([
                 UI.removeModals();
                 UI.confirm(Messages.oo_uploaded, function (yes) {
                     try {
-                        window.frames[0].editor.setViewModeDisconnect();
+                        getEditor().setViewModeDisconnect();
                     } catch (e) {}
                     if (!yes) { return; }
                     common.gotoURL();
@@ -1225,9 +1432,7 @@ define([
             }, 100);
         };
 
-        var loadLastDocument = function () {
-            var lastCp = getLastCp();
-            if (!lastCp) { return; }
+        var loadLastDocument = function (lastCp, onCpError, cb) {
             ooChannel.cpIndex = lastCp.index || 0;
             var parsed = Hash.parsePadUrl(lastCp.file);
             var secret = Hash.getSecrets('file', parsed.hash);
@@ -1241,6 +1446,7 @@ define([
             xhr.responseType = 'arraybuffer';
             xhr.onload = function () {
                 if (/^4/.test('' + this.status)) {
+                    onCpError();
                     return void console.error('XHR error', this.status);
                 }
                 var arrayBuffer = xhr.response;
@@ -1249,19 +1455,32 @@ define([
                     FileCrypto.decrypt(u8, key, function (err, decrypted) {
                         if (err) { return void console.error(err); }
                         var blob = new Blob([decrypted.content], {type: 'plain/text'});
+                        if (cb) {
+                            return cb(blob, getFileType());
+                        }
                         startOO(blob, getFileType());
                     });
                 }
             };
+            xhr.onerror = function () {
+                onCpError();
+            };
             xhr.send(null);
         };
-        var loadDocument = function (noCp, useNewDefault) {
+        var loadDocument = function (noCp, useNewDefault, i) {
             if (ooLoaded) { return; }
             var type = common.getMetadataMgr().getPrivateData().ooType;
             var file = getFileType();
             if (!noCp) {
+                var lastCp = getLastCp(false, i);
+                // If the last checkpoint is empty, load the "initial" doc instead
+                if (!lastCp || !lastCp.file) { return void loadDocument(true, useNewDefault); }
                 // Load latest checkpoint
-                return void loadLastDocument();
+                return void loadLastDocument(lastCp, function () {
+                    // Checkpoint error: load the previous one
+                    i = i || 0;
+                    loadDocument(noCp, useNewDefault, ++i);
+                });
             }
             var newText;
             switch (type) {
@@ -1283,7 +1502,6 @@ define([
 
         var initializing = true;
         var $bar = $('#cp-toolbar');
-        var cpNfInner;
 
         config = {
             patchTransformer: ChainPad.SmartJSONTransformer,
@@ -1298,15 +1516,6 @@ define([
                     return false;
                 }
             }
-        };
-
-        var setEditable = function (state) {
-            if (!state) {
-                try {
-                    window.frames[0].editor.setViewModeDisconnect(true);
-                } catch (e) {}
-            }
-            debug(state);
         };
 
         var stringifyInner = function () {
@@ -1348,23 +1557,14 @@ define([
         };
 
         config.onInit = function (info) {
-            readOnly = metadataMgr.getPrivateData().readOnly;
+            var privateData = metadataMgr.getPrivateData();
+
+            readOnly = privateData.readOnly;
 
             Title = common.createTitle({});
 
             var configTb = {
-                displayed: [
-                    'chat',
-                    'userlist',
-                    'title',
-                    'useradmin',
-                    'spinner',
-                    'newpad',
-                    'share',
-                    'limit',
-                    'unpinnedWarning',
-                    'notifications'
-                ],
+                displayed: ['pad'],
                 title: Title.getTitleConfig(),
                 metadataMgr: metadataMgr,
                 readOnly: readOnly,
@@ -1376,13 +1576,11 @@ define([
             toolbar = APP.toolbar = Toolbar.create(configTb);
             Title.setToolbar(toolbar);
 
-            var $rightside = toolbar.$rightside;
-
             if (window.CP_DEV_MODE) {
                 var $save = common.createButton('save', true, {}, function () {
-                    saveToServer();
+                    makeCheckpoint(true);
                 });
-                $save.appendTo($rightside);
+                $save.appendTo(toolbar.$bottomM);
             }
             if (window.CP_DEV_MODE || DISPLAY_RESTORE_BUTTON) {
                 common.createButton('', true, {
@@ -1392,33 +1590,44 @@ define([
                 }).click(function () {
                     if (initializing) { return void console.error('initializing'); }
                     restoreLastCp();
-                }).attr('title', 'Restore last checkpoint').appendTo($rightside);
+                }).attr('title', 'Restore last checkpoint').appendTo(toolbar.$bottomM);
             }
 
             var $exportXLSX = common.createButton('export', true, {}, exportXLSXFile);
-            $exportXLSX.appendTo($rightside);
+            $exportXLSX.appendTo(toolbar.$drawer);
 
+            var type = privateData.ooType;
             var accept = [".bin", ".ods", ".xlsx"];
+            if (type === "ooslide") {
+                accept = ['.bin', '.odp', '.pptx'];
+            } else if (type === "oodoc") {
+                accept = ['.bin', '.odt', '.docx'];
+            }
             if (typeof(Atomics) === "undefined") {
                 accept = ['.bin'];
             }
-            var $importXLSX = common.createButton('import', true, { accept: accept, binary : ["ods", "xlsx"] }, importXLSXFile);
-            $importXLSX.appendTo($rightside);
 
             if (common.isLoggedIn()) {
-                common.createButton('hashtag', true).appendTo($rightside);
+                var $importXLSX = common.createButton('import', true, {
+                    accept: accept,
+                    binary : ["ods", "xlsx", "odt", "docx", "odp", "pptx"]
+                }, importXLSXFile);
+                $importXLSX.appendTo(toolbar.$drawer);
+                common.createButton('hashtag', true).appendTo(toolbar.$drawer);
             }
 
             var $forget = common.createButton('forget', true, {}, function (err) {
                 if (err) { return; }
                 setEditable(false);
             });
-            $rightside.append($forget);
+            toolbar.$drawer.append($forget);
 
-            var helpMenu = APP.helpMenu = common.createHelpMenu(['beta', 'oo']);
-            $('#cp-app-oo-editor').prepend(common.getBurnAfterReadingWarning());
-            $('#cp-app-oo-editor').prepend(helpMenu.menu);
-            toolbar.$drawer.append(helpMenu.button);
+            if (!privateData.isEmbed) {
+                var helpMenu = APP.helpMenu = common.createHelpMenu(['beta', 'oo']);
+                $('#cp-app-oo-editor').prepend(common.getBurnAfterReadingWarning());
+                $('#cp-app-oo-editor').prepend(helpMenu.menu);
+                toolbar.$drawer.append(helpMenu.button);
+            }
 
             var $properties = common.createButton('properties', true);
             toolbar.$drawer.append($properties);
@@ -1450,6 +1659,7 @@ define([
                 content = hjson.content || content;
                 var newLatest = getLastCp();
                 sframeChan.query('Q_OO_SAVE', {
+                    hash: newLatest.hash,
                     url: newLatest.file
                 }, function () { });
                 newDoc = !content.hashes || Object.keys(content.hashes).length === 0;
@@ -1457,7 +1667,7 @@ define([
                 Title.updateTitle(Title.defaultTitle);
             }
 
-            var version = 'v2/';
+            var version = 'v2a/';
             // Old version detected: use the old OO and start the migration if we can
             if (privateData.ooForceVersion) {
                 if (privateData.ooForceVersion === "1") {
@@ -1475,6 +1685,16 @@ define([
                     $(APP.helpMenu.menu).after(msg);
                     readOnly = true;
                 }
+            }
+
+            // If the sheet is locked by an offline user, remove it
+            if (content && content.saveLock && !isUserOnline(content.saveLock)) {
+                content.saveLock = undefined;
+                APP.onLocal();
+            } else if (content && content.saveLock) {
+                // If someone is currently creating a checkpoint (and locking the sheet),
+                // make sure it will end (maybe you'll have to make the checkpoint yourself)
+                checkCheckpoint();
             }
 
             var s = h('script', {
@@ -1506,6 +1726,19 @@ define([
         };
 
         var reloadPopup = false;
+
+        var checkNewCheckpoint = function () {
+            var hasDrawings = checkDrawings();
+            if (hasDrawings) {
+                var lastCp = getLastCp();
+                loadLastDocument(lastCp, function () {
+                    // On error, do nothing
+                }, function (blob, type) {
+                    resetData(blob, type);
+                });
+            }
+        };
+
         config.onRemote = function () {
             if (initializing) { return; }
             var userDoc = APP.realtime.getUserDoc();
@@ -1514,17 +1747,35 @@ define([
                 metadataMgr.updateMetadata(json.metadata);
             }
 
+            var wasLocked = content.saveLock;
+
             var wasMigrating = content.migration;
 
             content = json.content;
+
+            if (content.saveLock && wasLocked !== content.saveLock) {
+                // Someone new is creating a checkpoint: fix the sheets ids
+                fixSheets();
+                // If the checkpoint is not saved in 20s to 40s, do it ourselves
+                checkCheckpoint();
+            }
+
             if (content.hashes) {
                 var latest = getLastCp(true);
                 var newLatest = getLastCp();
                 if (newLatest.index > latest.index) {
-                    fixSheets();
+                    var hasDrawings = checkDrawings();
+                    if (hasDrawings) {
+                        ooChannel.ready = false;
+                        ooChannel.queue = [];
+                    }
+                    // New checkpoint
                     sframeChan.query('Q_OO_SAVE', {
+                        hash: newLatest.hash,
                         url: newLatest.file
-                    }, function () { });
+                    }, function () {
+                        checkNewCheckpoint();
+                    });
                 }
                 oldHashes = JSON.parse(JSON.stringify(content.hashes));
             }
@@ -1549,25 +1800,23 @@ define([
             pinImages();
         };
 
-        config.onAbort = function () {
-            // inform of network disconnect
-            setEditable(false);
-            toolbar.failed();
-            UI.alert(Messages.common_connectionLost, undefined, true);
-        };
-
         config.onConnectionChange = function (info) {
-            setEditable(info.state);
             if (info.state) {
-                UI.findOKButton().click();
-                UI.confirm(Messages.oo_reconnect, function (yes) {
-                    if (!yes) { return; }
-                    common.gotoURL();
-                });
+                // If we tried to send changes while we were offline, force a page reload
+                UIElements.reconnectAlert();
+                if (Object.keys(pendingChanges).length) {
+                    return void UI.confirm(Messages.oo_reconnect, function (yes) {
+                        if (!yes) { return; }
+                        common.gotoURL();
+                    });
+                }
+                setEditable(true);
+                offline = false;
             } else {
+                setEditable(false);
                 offline = true;
                 UI.findOKButton().click();
-                UI.alert(Messages.common_connectionLost, undefined, true);
+                UIElements.disconnectAlert();
             }
         };
 

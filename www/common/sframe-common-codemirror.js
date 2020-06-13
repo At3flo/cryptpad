@@ -4,14 +4,15 @@ define([
     '/common/themes.js',
     '/customize/messages.js',
     '/common/common-ui-elements.js',
+    '/common/inner/common-mediatag.js',
     '/common/common-hash.js',
     '/common/common-util.js',
     '/common/text-cursor.js',
     '/bower_components/chainpad/chainpad.dist.js',
-], function ($, Modes, Themes, Messages, UIElements, Hash, Util, TextCursor, ChainPad) {
+], function ($, Modes, Themes, Messages, UIElements, MT, Hash, Util, TextCursor, ChainPad) {
     var module = {};
 
-    var cursorToPos = function(cursor, oldText) {
+     var cursorToPos = module.cursorToPos = function(cursor, oldText) {
         var cLine = cursor.line;
         var cCh = cursor.ch;
         var pos = 0;
@@ -27,7 +28,7 @@ define([
         return pos;
     };
 
-    var posToCursor = function(position, newText) {
+    var posToCursor = module.posToCursor = function(position, newText) {
         var cursor = {
             line: 0,
             ch: 0
@@ -62,15 +63,16 @@ define([
         });
 
         editor._noCursorUpdate = false;
-        editor.state.focused = true;
+        editor.scrollTo(scroll.left, scroll.top);
+
+        if (!editor.hasFocus()) { return; }
+
         if(selects[0] === selects[1]) {
             editor.setCursor(posToCursor(selects[0], remoteDoc));
         }
         else {
             editor.setSelection(posToCursor(selects[0], remoteDoc), posToCursor(selects[1], remoteDoc));
         }
-
-        editor.scrollTo(scroll.left, scroll.top);
     };
 
     module.getHeadingText = function (editor) {
@@ -121,27 +123,78 @@ define([
         return text.trim();
     };
 
-    module.create = function (defaultMode, CMeditor) {
+    module.mkIndentSettings = function (editor, metadataMgr) {
+        var setIndentation = function (units, useTabs, fontSize, spellcheck, brackets) {
+            if (typeof(units) !== 'number') { return; }
+            var doc = editor.getDoc();
+            editor.setOption('indentUnit', units);
+            editor.setOption('tabSize', units);
+            editor.setOption('indentWithTabs', useTabs);
+            editor.setOption('spellcheck', spellcheck);
+            editor.setOption('autoCloseBrackets', brackets);
+            editor.setOption("extraKeys", {
+                Tab: function() {
+                    if (doc.somethingSelected()) {
+                        editor.execCommand("indentMore");
+                    }
+                    else {
+                        if (!useTabs) { editor.execCommand("insertSoftTab"); }
+                        else { editor.execCommand("insertTab"); }
+                    }
+                },
+                "Shift-Tab": function () {
+                    editor.execCommand("indentLess");
+                },
+            });
+            setTimeout(function () {
+                $('.CodeMirror').css('font-size', fontSize+'px');
+                editor.refresh();
+            });
+        };
+
+        var indentKey = 'indentUnit';
+        var useTabsKey = 'indentWithTabs';
+        var fontKey = 'fontSize';
+        var spellcheckKey = 'spellcheck';
+        var updateIndentSettings = function () {
+            if (!metadataMgr) { return; }
+            var data = metadataMgr.getPrivateData().settings;
+            data = data.codemirror || {};
+            var indentUnit = data[indentKey];
+            var useTabs = data[useTabsKey];
+            var fontSize = data[fontKey];
+            var spellcheck = data[spellcheckKey];
+            var brackets = data.brackets;
+            setIndentation(
+                typeof(indentUnit) === 'number'? indentUnit : 2,
+                typeof(useTabs) === 'boolean'? useTabs : false,
+                typeof(fontSize) === 'number' ? fontSize : 12,
+                typeof(spellcheck) === 'boolean' ? spellcheck : false,
+                typeof(brackets) === 'boolean' ? brackets : true);
+        };
+        metadataMgr.onChangeLazy(updateIndentSettings);
+        updateIndentSettings();
+    };
+
+    module.create = function (defaultMode, CMeditor, textarea) {
         var exp = {};
 
         var CodeMirror = exp.CodeMirror = CMeditor;
         CodeMirror.modeURL = "cm/mode/%N/%N";
 
         var $pad = $('#pad-iframe');
-        var $textarea = exp.$textarea = $('#editor1');
+        var $textarea = exp.$textarea = textarea ? $(textarea) : $('#editor1');
         if (!$textarea.length) { $textarea = exp.$textarea = $pad.contents().find('#editor1'); }
 
         var Title;
         var onLocal = function () {};
-        var $rightside;
         var $drawer;
         exp.init = function (local, title, toolbar) {
             if (typeof local === "function") {
                 onLocal = local;
             }
             Title = title;
-            $rightside = toolbar.$rightside;
-            $drawer = toolbar.$drawer;
+            $drawer = toolbar.$theme || $();
         };
 
         var editor = exp.editor = CMeditor.fromTextArea($textarea[0], {
@@ -162,6 +215,24 @@ define([
             readOnly: true
         });
         editor.focus();
+
+        // Fix cursor and scroll position after undo/redo
+        var undoData;
+        editor.on('beforeChange', function (editor, change) {
+            if (change.origin !== "undo" && change.origin !== "redo") { return; }
+            undoData = editor.getValue();
+        });
+        editor.on('change', function (editor, change) {
+            if (change.origin !== "undo" && change.origin !== "redo") { return; }
+            if (typeof(undoData) === "undefined") { return; }
+            var doc = editor.getValue();
+            var ops = ChainPad.Diff.diff(undoData, doc);
+            undoData = undefined;
+            if (!ops.length) { return; }
+            var cursor = posToCursor(ops[0].offset, doc);
+            editor.setCursor(cursor);
+            editor.scrollIntoView(cursor);
+        });
 
         var setMode = exp.setMode = function (mode, cb) {
             exp.highlightMode = mode;
@@ -235,7 +306,6 @@ define([
             var dropdownConfig = {
                 text: Messages.languageButton, // Button initial text
                 options: options, // Entries displayed in the menu
-                left: true, // Open to the left of the button
                 isSelect: true,
                 feedback: 'CODE_LANGUAGE',
                 common: Common
@@ -283,16 +353,22 @@ define([
                     });
                 });
                 var dropdownConfig = {
-                    text: 'Theme', // Button initial text
+                    text: Messages.code_editorTheme, // Button initial text
                     options: options, // Entries displayed in the menu
-                    left: true, // Open to the left of the button
                     isSelect: true,
                     initialValue: lastTheme,
                     feedback: 'CODE_THEME',
                     common: Common
                 };
                 var $block = exp.$theme = UIElements.createDropdown(dropdownConfig);
-                $block.find('button').attr('title', Messages.themeButtonTitle);
+                $block.find('button').attr('title', Messages.themeButtonTitle).click(function () {
+                    var state = $block.find('.cp-dropdown-content').is(':visible');
+                    var $c = $block.closest('.cp-toolbar-drawer-content');
+                    $c.removeClass('cp-dropdown-visible');
+                    if (!state) {
+                        $c.addClass('cp-dropdown-visible');
+                    }
+                });
 
                 setTheme(lastTheme, $block);
 
@@ -360,8 +436,7 @@ define([
 
         /////
 
-        var canonicalize = function (t) { return t.replace(/\r\n/g, '\n'); };
-
+        var canonicalize = exp.canonicalize = function (t) { return t.replace(/\r\n/g, '\n'); };
 
 
         exp.contentUpdate = function (newContent) {
@@ -369,6 +444,7 @@ define([
             var remoteDoc = newContent.content;
             // setValueAndCursor triggers onLocal, even if we don't make any change to the content
             // and it may revert other changes (metadata)
+
             if (oldDoc === remoteDoc) { return; }
             exp.setValueAndCursor(oldDoc, remoteDoc);
         };
@@ -379,53 +455,7 @@ define([
         };
 
         exp.mkIndentSettings = function (metadataMgr) {
-            var setIndentation = function (units, useTabs, fontSize, spellcheck, brackets) {
-                if (typeof(units) !== 'number') { return; }
-                var doc = editor.getDoc();
-                editor.setOption('indentUnit', units);
-                editor.setOption('tabSize', units);
-                editor.setOption('indentWithTabs', useTabs);
-                editor.setOption('spellcheck', spellcheck);
-                editor.setOption('autoCloseBrackets', brackets);
-                editor.setOption("extraKeys", {
-                    Tab: function() {
-                        if (doc.somethingSelected()) {
-                            editor.execCommand("indentMore");
-                        }
-                        else {
-                            if (!useTabs) { editor.execCommand("insertSoftTab"); }
-                            else { editor.execCommand("insertTab"); }
-                        }
-                    },
-                    "Shift-Tab": function () {
-                        editor.execCommand("indentLess");
-                    },
-                });
-                $('.CodeMirror').css('font-size', fontSize+'px');
-            };
-
-            var indentKey = 'indentUnit';
-            var useTabsKey = 'indentWithTabs';
-            var fontKey = 'fontSize';
-            var spellcheckKey = 'spellcheck';
-            var updateIndentSettings = function () {
-                if (!metadataMgr) { return; }
-                var data = metadataMgr.getPrivateData().settings;
-                data = data.codemirror || {};
-                var indentUnit = data[indentKey];
-                var useTabs = data[useTabsKey];
-                var fontSize = data[fontKey];
-                var spellcheck = data[spellcheckKey];
-                var brackets = data.brackets;
-                setIndentation(
-                    typeof(indentUnit) === 'number'? indentUnit : 2,
-                    typeof(useTabs) === 'boolean'? useTabs : false,
-                    typeof(fontSize) === 'number' ? fontSize : 12,
-                    typeof(spellcheck) === 'boolean' ? spellcheck : false,
-                    typeof(brackets) === 'boolean' ? brackets : true);
-            };
-            metadataMgr.onChangeLazy(updateIndentSettings);
-            updateIndentSettings();
+            module.mkIndentSettings(editor, metadataMgr);
         };
 
         exp.getCursor = function () {
@@ -446,12 +476,7 @@ define([
             })[0];
         };
         var makeTippy = function (cursor) {
-            var html = '<span class="cp-cursor-avatar">';
-            if (cursor.avatar && UIElements.getAvatar(cursor.avatar)) {
-                html += UIElements.getAvatar(cursor.avatar);
-            }
-            html += cursor.name + '</span>';
-            return html;
+            return MT.getCursorAvatar(cursor);
         };
         var marks = {};
         exp.removeCursors = function () {
@@ -487,11 +512,12 @@ define([
                 var cursorPosS = posToCursor(cursor.selectionStart, doc);
                 var el = makeCursor(id);
                 if (cursor.color) {
-                    $(el).css('border-color', cursor.color);
-                    $(el).css('background-color', cursor.color);
+                    $(el).css('border-color', cursor.color)
+                         .css('background-color', cursor.color);
                 }
                 if (cursor.name) {
-                    $(el).attr('title', makeTippy(cursor));
+                    $(el).attr('title', makeTippy(cursor))
+                         .attr('data-cptippy-html', true);
                 }
                 marks[id] = editor.setBookmark(cursorPosS, { widget: el });
             } else {
@@ -502,6 +528,9 @@ define([
                     : 'background-color: rgba(255,0,0,0.2)';
                 marks[id] = editor.markText(pos1, pos2, {
                     css: css,
+                    attributes: {
+                        'data-cptippy-html': true,
+                    },
                     title: makeTippy(cursor),
                     className: 'cp-tippy-html'
                 });

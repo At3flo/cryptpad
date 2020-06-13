@@ -34,6 +34,9 @@
     };
 
     Util.mkAsync = function (f) {
+        if (typeof(f) !== 'function') {
+            throw new Error('EXPECTED_FUNCTION');
+        }
         return function () {
             var args = Array.prototype.slice.call(arguments);
             setTimeout(function () {
@@ -65,9 +68,28 @@
         };
     };
 
-    Util.response = function () {
+    Util.mkTimeout = function (_f, ms) {
+        ms = ms || 0;
+        var f = Util.once(_f);
+
+        var timeout = setTimeout(function () {
+            f('TIMEOUT');
+        }, ms);
+
+        return Util.both(f, function () {
+            clearTimeout(timeout);
+        });
+    };
+
+    Util.response = function (errorHandler) {
         var pending = {};
         var timeouts = {};
+
+        if (typeof(errorHandler) !== 'function') {
+            errorHandler = function (label) {
+                throw new Error(label);
+            };
+        }
 
         var clear = function (id) {
             clearTimeout(timeouts[id]);
@@ -76,8 +98,8 @@
         };
 
         var expect = function (id, fn, ms) {
-            if (typeof(id) !== 'string') { throw new Error("EXPECTED_STRING"); }
-            if (typeof(fn) !== 'function') { throw new Error("EXPECTED_CALLBACK"); }
+            if (typeof(id) !== 'string') { errorHandler('EXPECTED_STRING'); }
+            if (typeof(fn) !== 'function') { errorHandler('EXPECTED_CALLBACK'); }
             pending[id] = fn;
             if (typeof(ms) === 'number' && ms) {
                 timeouts[id] = setTimeout(function () {
@@ -89,8 +111,21 @@
 
         var handle = function (id, args) {
             var fn = pending[id];
-            if (typeof(fn) !== 'function') { throw new Error("MISSING_CALLBACK"); }
-            pending[id].apply(null, Array.isArray(args)? args : [args]);
+            if (typeof(fn) !== 'function') {
+                errorHandler("MISSING_CALLBACK", {
+                    id: id,
+                    args: args,
+                });
+            }
+            try {
+                pending[id].apply(null, Array.isArray(args)? args : [args]);
+            } catch (err) {
+                errorHandler('HANDLER_ERROR', {
+                    error: err,
+                    id: id,
+                    args: args,
+                });
+            }
             clear(id);
         };
 
@@ -98,6 +133,9 @@
             clear: clear,
             expected: function (id) {
                 return Boolean(pending[id]);
+            },
+            expectation: function (id) {
+                return pending[id];
             },
             expect: expect,
             handle: handle,
@@ -224,6 +262,7 @@
         else if (bytes >= oneMegabyte) { return 'MB'; }
     };
 
+
     // given a path, asynchronously return an arraybuffer
     Util.fetch = function (src, cb, progress) {
         var CB = Util.once(cb);
@@ -268,8 +307,8 @@
     Util.throttle = function (f, ms) {
         var to;
         var g = function () {
-            window.clearTimeout(to);
-            to = window.setTimeout(Util.bake(f, Util.slice(arguments)), ms);
+            clearTimeout(to);
+            to = setTimeout(Util.bake(f, Util.slice(arguments)), ms);
         };
         return g;
     };
@@ -426,6 +465,27 @@
         if (type === 'application/x-javascript') { return true; }
         if (type === 'application/xml') { return true; }
         return false;
+    };
+
+    var emoji_patt = /([\uD800-\uDBFF][\uDC00-\uDFFF])/;
+    var isEmoji = function (str) {
+      return emoji_patt.test(str);
+    };
+    var emojiStringToArray = function (str) {
+      var split = str.split(emoji_patt);
+      var arr = [];
+      for (var i=0; i<split.length; i++) {
+        var char = split[i];
+        if (char !== "") {
+          arr.push(char);
+        }
+      }
+      return arr;
+    };
+    Util.getFirstCharacter = function (str) {
+      if (!str || !str.trim()) { return '?'; }
+      var emojis = emojiStringToArray(str);
+      return isEmoji(emojis[0])? emojis[0]: str[0];
     };
 
     if (typeof(module) !== 'undefined' && module.exports) {

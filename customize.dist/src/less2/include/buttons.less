@@ -9,8 +9,8 @@
     @alertify-input-bg: @colortheme_modal-input;
     @alertify-input-fg: @colortheme_modal-input-fg;
 
-    input:not(.form-control), textarea {
-        background-color: @alertify-input-fg;
+    input:not(.form-control), textarea, div.cp-textarea {
+        // background-color: @alertify-input-fg;
         color: @cryptpad_text_col;
         border: 1px solid @alertify-input-bg;
         width: 100%;
@@ -21,6 +21,10 @@
             color: @cryptpad_text_col;
             border-color: @alertify-input-fg;
         }
+    }
+
+    input:not(.form-control) {
+        height: @variables_input-height;
     }
 
     div.cp-alertify-type {
@@ -40,14 +44,44 @@
         }
     }
 
-    textarea {
+    textarea, div.cp-textarea {
         padding: 8px;
         &[readonly] {
             overflow: hidden;
             resize: none;
         }
     }
+    div.cp-textarea {
+        height: 60px;
+        width: 100%;
+        background-color: white;
+        cursor: text;
+        outline: none;
+        white-space: pre-wrap;
+        overflow-y: auto;
+        word-break: break-word;
+        resize: vertical;
+    }
 
+    div.cp-button-confirm {
+        display: inline-block;
+        button {
+            margin: 0 !important;
+        }
+        .cp-button-timer {
+            height: 3px;
+            & > div {
+                height: 100%;
+                background-color: @colortheme_alertify-primary;
+                &.danger, &.btn-danger, &.danger-alt, &.btn-danger-alt {
+                    background-color: @colortheme_alertify-red;
+                }
+            }
+        }
+    }
+    button.cp-button-confirm-placeholder {
+        margin-bottom: 3px !important;
+    }
 
     button:not(.pure-button):not(.md-button):not(.mdl-button) {
 
@@ -76,7 +110,7 @@
             margin: 0;
         }
 
-        &:hover, &:active {
+        &:hover, &:active, &:focus {
             background-color: lighten(@alertify-fore, 35%);
         }
 
@@ -85,11 +119,21 @@
             white-space: normal;
             font-weight: bold;
         }
+
         &.danger, &.btn-danger {
             background-color: @colortheme_alertify-red;
             border-color: @colortheme_alertify-red-border;
             color: @colortheme_alertify-red-color;
-            &:hover, &:active {
+            &:hover, &:active, &:focus {
+                background-color: contrast(@colortheme_modal-bg, darken(@colortheme_alertify-red, 10%), lighten(@colortheme_alertify-red, 10%));
+            }
+        }
+
+        &.danger-alt, &.btn-danger-alt {
+            border-color: @colortheme_alertify-red;
+            color: @colortheme_alertify-red;
+            &:hover, &:active, &:focus {
+                color: @colortheme_alertify-red-color;
                 background-color: contrast(@colortheme_modal-bg, darken(@colortheme_alertify-red, 10%), lighten(@colortheme_alertify-red, 10%));
             }
         }
@@ -98,7 +142,7 @@
             background-color: @colortheme_alertify-green;
             border-color: @colortheme_alertify-green-border;
             color: @colortheme_alertify-green-color;
-            &:hover, &:active {
+            &:hover, &:active, &:focus {
                 background-color: contrast(@colortheme_modal-bg, darken(@colortheme_alertify-green, 10%), lighten(@colortheme_alertify-green, 10%));
             }
         }
@@ -108,7 +152,7 @@
             color: @colortheme_alertify-primary-text;
             border-color: @colortheme_alertify-primary-border;
             font-weight: bold;
-            &:hover, &:active {
+            &:hover, &:active, &:focus {
                 background-color: contrast(@colortheme_modal-bg, darken(@colortheme_alertify-primary, 10%), lighten(@colortheme_alertify-primary, 10%));
             }
         }
@@ -116,7 +160,7 @@
         &.cancel, &.btn-cancel {
             border-color: @colortheme_alertify-cancel-border;
             color: @colortheme_alertify-cancel-border;
-            &:hover, &:hover {
+            &:hover, &:hover, &:focus {
                 background-color: fade(@colortheme_alertify-cancel-border, 25%);
             }
         }

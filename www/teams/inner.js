@@ -1,6 +1,6 @@
 define([
     'jquery',
-    '/common/toolbar3.js',
+    '/common/toolbar.js',
     '/common/drive-ui.js',
     '/common/common-util.js',
     '/common/common-hash.js',
@@ -12,10 +12,11 @@ define([
     '/common/sframe-common.js',
     '/common/proxy-manager.js',
     '/common/userObject.js',
+    '/common/inner/common-mediatag.js',
     '/common/hyperscript.js',
     '/customize/application_config.js',
     '/common/messenger-ui.js',
-    '/common/invitation.js',
+    '/common/inner/invitation.js',
     '/customize/messages.js',
 
     'css!/bower_components/bootstrap/dist/css/bootstrap.min.css',
@@ -35,6 +36,7 @@ define([
     SFCommon,
     ProxyManager,
     UserObject,
+    MT,
     h,
     AppConfig,
     MessengerUI,
@@ -295,22 +297,29 @@ define([
             if (!proxy.drive || typeof(proxy.drive) !== 'object') {
                 throw new Error("Corrupted drive");
             }
-            if (APP.usageBar) { APP.usageBar.stop(); }
-            APP.usageBar = common.createUsageBar(APP.team, function (err, $limitContainer) {
-                if (err) { return void DriveUI.logError(err); }
-                driveAPP.$limit = $limitContainer;
-                $limitContainer.attr('title', Messages.team_quota);
-            }, true);
             driveAPP.team = id;
 
             // Provide secondaryKey
             var teamData = (privateData.teams || {})[id] || {};
             driveAPP.readOnly = !teamData.hasSecondaryKey;
+
+            if (APP.usageBar) { APP.usageBar.stop(); }
+            APP.usageBar = undefined;
+            if (!driveAPP.readOnly) {
+                APP.usageBar = common.createUsageBar(APP.team, function (err, $limitContainer) {
+                    if (err) { return void DriveUI.logError(err); }
+                    $limitContainer.attr('title', Messages.team_quota);
+                }, true);
+            }
+
             var drive = DriveUI.create(common, {
                 proxy: proxy,
                 folders: folders,
                 updateObject: updateObject,
                 updateSharedFolders: updateSharedFolders,
+
+                $limit: APP.usageBar && APP.usageBar.$container,
+                toolbar: APP.toolbar,
                 APP: driveAPP,
                 edPublic: APP.teamEdPublic,
                 editKey: teamData.secondaryKey
@@ -501,7 +510,6 @@ define([
             h('div.cp-app-drive-container', {tabindex:0}, [
                 h('div#cp-app-drive-tree'),
                 h('div#cp-app-drive-content-container', [
-                    h('div#cp-app-drive-toolbar'),
                     h('div#cp-app-drive-connection-state', {style: "display: none;"}, Messages.disconnected),
                     h('div#cp-app-drive-content', {tabindex:2})
                 ])
@@ -527,9 +535,11 @@ define([
     };
 
     var makePermissions = function () {
-        var $blockContainer = UIElements.createModal({
+        var modal= UI.createModal({
             id: 'cp-teams-roster-dialog',
-        }).show();
+        });
+        modal.show();
+        var $blockContainer = modal.$modal;
 
         var makeRow = function (arr, first) {
             return arr.map(function (val) {
@@ -960,7 +970,7 @@ define([
         // Upload
         var avatar = h('div.cp-team-avatar.cp-avatar');
         var $avatar = $(avatar);
-        var data = UIElements.addAvatar(common, function (ev, data) {
+        var data = MT.addAvatar(common, function (ev, data) {
             if (!data.url) { return void UI.warn(Messages.error); }
             APP.module.execCommand('GET_TEAM_METADATA', {
                 teamId: APP.team
@@ -1045,7 +1055,7 @@ define([
 
     var displayUser = function (common, data) {
         var avatar = h('span.cp-teams-invite-from-avatar.cp-avatar');
-        UIElements.displayAvatar(common, $(avatar), data.avatar, data.displayName);
+        common.displayAvatar($(avatar), data.avatar, data.displayName);
         return h('div.cp-teams-invite-from-author', [
             avatar,
             h('span.cp-teams-invite-from-name', data.displayName)
@@ -1281,6 +1291,7 @@ define([
             var sframeChan = common.getSframeChannel();
             var metadataMgr = common.getMetadataMgr();
             var privateData = metadataMgr.getPrivateData();
+            var user = metadataMgr.getUserData();
 
             readOnly = driveAPP.readOnly = metadataMgr.getPrivateData().readOnly;
 
@@ -1302,14 +1313,14 @@ define([
                 sfCommon: common,
                 $container: $bar
             };
-            var toolbar = Toolbar.create(configTb);
-            toolbar.$rightside.hide(); // hide the bottom part of the toolbar
+            var toolbar = APP.toolbar = Toolbar.create(configTb);
             // Update the name in the user menu
-            driveAPP.$displayName = $bar.find('.' + Toolbar.constants.username);
+            var $displayName = $bar.find('.' + Toolbar.constants.username);
             metadataMgr.onChange(function () {
                 var name = metadataMgr.getUserData().name || Messages.anonymous;
-                driveAPP.$displayName.text(name);
+                $displayName.text(name);
             });
+            $displayName.text(user.name || Messages.anonymous);
 
             // Load the Team module
             var onEvent = function (obj) {
@@ -1379,13 +1390,13 @@ define([
                 setEditable(false);
                 if (APP.team && driveAPP.refresh) { driveAPP.refresh(); }
                 toolbar.failed();
-                if (!noAlert) { UI.alert(Messages.common_connectionLost, undefined, true); }
+                if (!noAlert) { UIElements.disconnectAlert(); }
             };
             var onReconnect = function () {
                 setEditable(true);
                 if (APP.team && driveAPP.refresh) { driveAPP.refresh(); }
                 toolbar.reconnecting();
-                UI.findOKButton().click();
+                UIElements.reconnectAlert();
             };
 
             sframeChan.on('EV_DRIVE_LOG', function (msg) {

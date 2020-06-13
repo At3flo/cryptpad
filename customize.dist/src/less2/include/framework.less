@@ -15,6 +15,7 @@
 @import (reference) "./messenger.less";
 @import (reference) "./cursor.less";
 @import (reference) "./usergrid.less";
+@import (reference) "./mentions.less";
 @import (reference) "./modals-ui-elements.less";
 
 .framework_main(@bg-color, @warn-color, @color) {
@@ -41,9 +42,13 @@
     .tippy_main();
     .checkmark_main(20px);
     .password_main();
-    .messenger_main();
+    .messenger_main(
+        @color: @cryptpad_text_col,
+        @bg-color: @colortheme_pad-chat-bg
+    );
     .cursor_main();
     .usergrid_main();
+    .mentions_main();
     .creation_main(
         @bg-color: @bg-color,
         @color: @color

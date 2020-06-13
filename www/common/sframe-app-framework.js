@@ -1,7 +1,7 @@
 define([
     'jquery',
     '/bower_components/hyperjson/hyperjson.js',
-    '/common/toolbar3.js',
+    '/common/toolbar.js',
     'json.sortify',
     '/bower_components/nthen/index.js',
     '/common/sframe-common.js',
@@ -131,6 +131,8 @@ define([
             if (state === STATE.INFINITE_SPINNER && newState !== STATE.READY) { return; }
             if (newState === STATE.INFINITE_SPINNER || newState === STATE.DELETED) {
                 state = newState;
+            } else if (newState === STATE.ERROR) {
+                state = newState;
             } else if (state === STATE.DISCONNECTED && newState !== STATE.INITIALIZING) {
                 throw new Error("Cannot transition from DISCONNECTED to " + newState); // FIXME we are getting "DISCONNECTED to READY" on prod
             } else if (state !== STATE.READY && newState === STATE.HISTORY_MODE) {
@@ -161,6 +163,10 @@ define([
                 }
                 case STATE.ERROR: {
                     evStart.reg(function () {
+                        if (text === 'ERESTRICTED') {
+                            toolbar.failed(true);
+                            return;
+                        }
                         toolbar.errorState(true, text);
                         var msg = Messages.chainpadError;
                         UI.errorLoadingScreen(msg, true, true);
@@ -169,6 +175,10 @@ define([
                 }
                 case STATE.FORGOTTEN: {
                     evStart.reg(function () { toolbar.forgotten(); });
+                    break;
+                }
+                case STATE.FORBIDDEN: {
+                    evStart.reg(function () { toolbar.deleted(); });
                     break;
                 }
                 case STATE.DELETED: {
@@ -255,6 +265,7 @@ define([
             if (!bool && update) { onRemote(); }
         };
 
+        /*
         var hasChanged = function (content) {
             try {
                 var oldValue = JSON.parse(cpNfInner.chainpad.getUserDoc());
@@ -266,8 +277,9 @@ define([
             } catch (e) {}
             return false;
         };
+        */
 
-        onLocal = function (padChange) {
+        onLocal = function (/*padChange*/) {
             if (state !== STATE.READY) { return; }
             if (readOnly) { return; }
 
@@ -279,9 +291,11 @@ define([
                 throw new Error("Content must be an object or array, type is " + typeof(content));
             }
 
+            /*
             if (padChange && hasChanged(content)) {
-                cpNfInner.metadataMgr.addAuthor();
+                //cpNfInner.metadataMgr.addAuthor();
             }
+            */
             oldContent = content;
 
             if (Array.isArray(content)) {
@@ -314,6 +328,11 @@ define([
             if (state === STATE.DELETED) { return; }
 
             UI.updateLoadingProgress({ state: -1 }, false);
+
+            if (toolbar) {
+                // Check if we have a new chainpad instance
+                toolbar.resetChainpad(cpNfInner.chainpad);
+            }
 
             var newPad = false;
             if (newContentStr === '') { newPad = true; }
@@ -354,6 +373,9 @@ define([
             }).nThen(function () {
                 stateChange(STATE.READY);
                 firstConnection = false;
+
+                oldContent = undefined;
+
                 if (!readOnly) { onLocal(); }
                 evOnReady.fire(newPad);
 
@@ -384,26 +406,24 @@ define([
                         Thumb.initPadThumbnails(common, options.thumbnail);
                     }
                 }
-
-                var skipTemp = Util.find(privateDat, ['settings', 'general', 'creation', 'noTemplate']);
-                var skipCreation = Util.find(privateDat, ['settings', 'general', 'creation', 'skip']);
-                if (newPad && (!AppConfig.displayCreationScreen || (!skipTemp && skipCreation))) {
-                    common.openTemplatePicker();
-                }
             });
         };
         var onConnectionChange = function (info) {
             if (state === STATE.DELETED) { return; }
             stateChange(info.state ? STATE.INITIALIZING : STATE.DISCONNECTED, info.permanent);
             /*if (info.state) {
-                UI.findOKButton().click();
+                UIElements.reconnectAlert();
             } else {
-                UI.alert(Messages.common_connectionLost, undefined, true);
+                UIElements.disconnectAlert();
             }*/
         };
 
         var onError = function (err) {
-            common.onServerError(err, toolbar, function () {
+            common.onServerError(err, null, function () {
+                if (err.type === 'ERESTRICTED') {
+                    stateChange(STATE.ERROR, err.type);
+                    return;
+                }
                 stateChange(STATE.DELETED);
             });
         };
@@ -413,21 +433,37 @@ define([
                 var ext = (typeof(extension) === 'function') ? extension() : extension;
                 var suggestion = title.suggestTitle('cryptpad-document');
                 ext = ext || '.txt';
-                var types = [{
-                    tag: 'a',
-                    attributes: {
-                        'data-value': ext,
-                        'href': '#'
-                    },
-                    content: ext
-                }, {
+                var types = [];
+                if (Array.isArray(ext) && ext.length) {
+                    ext.forEach(function (_ext) {
+                        types.push({
+                            tag: 'a',
+                            attributes: {
+                                'data-value': _ext,
+                                'href': '#'
+                            },
+                            content: _ext
+                        });
+                    });
+                    ext = ext[0];
+                } else {
+                    types.push({
+                        tag: 'a',
+                        attributes: {
+                            'data-value': ext,
+                            'href': '#'
+                        },
+                        content: ext
+                    });
+                }
+                types.push({
                     tag: 'a',
                     attributes: {
                         'data-value': '',
                         'href': '#'
                     },
                     content: '&nbsp;'
-                }];
+                });
                 var dropdownConfig = {
                     text: ext, // Button initial text
                     caretDown: true,
@@ -441,14 +477,15 @@ define([
                     Util.fixFileName(suggestion), function (filename)
                 {
                     if (!(typeof(filename) === 'string' && filename)) { return; }
-                    filename = filename + $select.getValue();
+                    var ext = $select.getValue();
+                    filename = filename + ext;
                     if (async) {
                         fe(function (blob) {
                             SaveAs(blob, filename);
-                        });
+                        }, ext);
                         return;
                     }
-                    var blob = fe();
+                    var blob = fe(null, ext);
                     SaveAs(blob, filename);
                 }, {
                     typeInput: $select[0]
@@ -487,8 +524,13 @@ define([
 
         var createFilePicker = function () {
             if (!common.isLoggedIn()) { return; }
-            common.initFilePicker({
-                onSelect: function (data) {
+            $embedButton = common.createButton('mediatag', true).click(function () {
+                var cfg = {
+                    types: ['file'],
+                    where: ['root']
+                };
+                if ($embedButton.data('filter')) { cfg.filter = $embedButton.data('filter'); }
+                common.openFilePicker(cfg, function (data) {
                     if (data.type !== 'file') {
                         console.log("Unexpected data type picked " + data.type);
                         return;
@@ -500,21 +542,16 @@ define([
                     var src = data.src = data.src.slice(0,1) === '/' ? origin + data.src : data.src;
                     mediaTagEmbedder($('<media-tag src="' + src +
                         '" data-crypto-key="cryptpad:' + data.key + '"></media-tag>'), data);
-                }
-            });
-            $embedButton = common.createButton('mediatag', true).click(function () {
-                common.openFilePicker({
-                    types: ['file'],
-                    where: ['root']
                 });
-            }).appendTo(toolbar.$rightside).hide();
+            }).appendTo(toolbar.$bottomL).hide();
         };
-        var setMediaTagEmbedder = function (mte) {
+        var setMediaTagEmbedder = function (mte, filter) {
             if (!common.isLoggedIn()) { return; }
             if (!mte || readOnly) {
                 $embedButton.hide();
                 return;
             }
+            if (filter) { $embedButton.data('filter', filter); }
             $embedButton.show();
             mediaTagEmbedder = mte;
         };
@@ -634,19 +671,7 @@ define([
                 getHeadingText: function () { return titleRecommender(); }
             }, onLocal);
             var configTb = {
-                displayed: [
-                    'chat',
-                    'userlist',
-                    'title',
-                    'useradmin',
-                    'spinner',
-                    'newpad',
-                    'share',
-                    'limit',
-                    'request',
-                    'unpinnedWarning',
-                    'notifications'
-                ],
+                displayed: ['pad'],
                 title: title.getTitleConfig(),
                 metadataMgr: cpNfInner.metadataMgr,
                 readOnly: readOnly,
@@ -674,27 +699,30 @@ define([
             $hist.addClass('cp-hidden-if-readonly');
             toolbar.$drawer.append($hist);
 
+            var $copy = common.createButton('copy', true);
+            toolbar.$drawer.append($copy);
+
             if (!cpNfInner.metadataMgr.getPrivateData().isTemplate) {
                 var templateObj = {
                     rt: cpNfInner.chainpad,
                     getTitle: function () { return cpNfInner.metadataMgr.getMetadata().title; }
                 };
                 var $templateButton = common.createButton('template', true, templateObj);
-                toolbar.$rightside.append($templateButton);
+                toolbar.$drawer.append($templateButton);
             }
 
             var $importTemplateButton = common.createButton('importtemplate', true);
             toolbar.$drawer.append($importTemplateButton);
 
             /* add a forget button */
-            toolbar.$rightside.append(common.createButton('forget', true, {}, function (err) {
+            toolbar.$drawer.append(common.createButton('forget', true, {}, function (err) {
                 if (err) { return; }
                 stateChange(STATE.FORGOTTEN);
             }));
 
             if (common.isLoggedIn()) {
                 var $tags = common.createButton('hashtag', true);
-                toolbar.$rightside.append($tags);
+                toolbar.$drawer.append($tags);
             }
 
             var $properties = common.createButton('properties', true);

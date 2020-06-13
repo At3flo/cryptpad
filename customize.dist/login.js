@@ -180,7 +180,7 @@ define([
                     return;
                 }
 
-                console.error(decryptedBlock);
+                //console.error(decryptedBlock);
                 res.blockInfo = decryptedBlock;
             }));
         }).nThen(function (waitFor) {
@@ -275,7 +275,7 @@ define([
             if (res.blockInfo) {
                 opt = loginOptionsFromBlock(res.blockInfo);
                 userHash = res.blockInfo.User_hash;
-                console.error(opt, userHash);
+                //console.error(opt, userHash);
             } else {
                 console.log("allocating random bytes for a new user object");
                 opt = allocateBytes(Nacl.randomBytes(Exports.requiredBytes));
@@ -293,7 +293,7 @@ define([
                     return void cb('MODERN_REGISTRATION_INIT');
                 }
 
-                console.error(JSON.stringify(rt.proxy));
+                //console.error(JSON.stringify(rt.proxy));
 
                 // export the realtime object you checked
                 RT = rt;
@@ -341,6 +341,11 @@ define([
                     if (shouldImport) {
                         setMergeAnonDrive();
                     }
+                    var l = Util.find(rt.proxy, ['settings', 'general', 'language']);
+                    var LS_LANG = "CRYPTPAD_LANG";
+                    if (l) {
+                        localStorage.setItem(LS_LANG, l);
+                    }
                     return void LocalStore.login(userHash, uname, function () {
                         cb(void 0, res);
                     });
@@ -357,7 +362,7 @@ define([
                     if (shouldImport) {
                         setMergeAnonDrive();
                     } else {
-                        proxy.version = 6;
+                        proxy.version = 10;
                     }
 
                     Feedback.send('REGISTRATION', true);
@@ -458,6 +463,7 @@ define([
                                 UI.removeLoadingScreen(function () {
                                     UI.alert(Messages.login_noSuchUser, function () {
                                         hashing = false;
+                                        $('#password').focus();
                                     });
                                 });
                                 break;
@@ -465,6 +471,7 @@ define([
                                 UI.removeLoadingScreen(function () {
                                     UI.alert(Messages.login_invalUser, function () {
                                         hashing = false;
+                                        $('#password').focus();
                                     });
                                 });
                                 break;
@@ -472,6 +479,7 @@ define([
                                 UI.removeLoadingScreen(function () {
                                     UI.alert(Messages.login_invalPass, function () {
                                         hashing = false;
+                                        $('#password').focus();
                                     });
                                 });
                                 break;
@@ -482,6 +490,7 @@ define([
                                     ]);
                                     UI.alert(warning, function () {
                                         hashing = false;
+                                        $('#password').focus();
                                     });
                                 });
                                 break;

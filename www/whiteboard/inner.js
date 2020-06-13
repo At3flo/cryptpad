@@ -50,7 +50,9 @@ define([
         var $widthLabel = $('label[for="cp-app-whiteboard-width"]');
         var $opacity = $('#cp-app-whiteboard-opacity');
         var $opacityLabel = $('label[for="cp-app-whiteboard-opacity"]');
-        var $toggle = $('#cp-app-whiteboard-toggledraw');
+        var $type = $('.cp-whiteboard-type');
+        var $brush = $('.cp-whiteboard-type .brush');
+        var $move = $('.cp-whiteboard-type .move');
         var $deleteButton = $('#cp-app-whiteboard-delete');
 
         var metadataMgr = framework._.cpNfInner.metadataMgr;
@@ -97,7 +99,7 @@ define([
         var updateBrushWidth = function () {
             var val = $width.val();
             canvas.freeDrawingBrush.width = Number(val);
-            $widthLabel.text(Messages._getKey("canvas_widthLabel", [val]));
+            $widthLabel.text(Messages._getKey("canvas_widthLabel", ['']));
             $('#cp-app-whiteboard-width-val').text(val + 'px');
             createCursor();
         };
@@ -108,7 +110,7 @@ define([
             var val = $opacity.val();
             brush.opacity = Number(val);
             canvas.freeDrawingBrush.color = Colors.hex2rgba(brush.color, brush.opacity);
-            $opacityLabel.text(Messages._getKey("canvas_opacityLabel", [val]));
+            $opacityLabel.text(Messages._getKey("canvas_opacityLabel", ['']));
             $('#cp-app-whiteboard-opacity-val').text((Number(val) * 100) + '%');
             createCursor();
         };
@@ -116,17 +118,27 @@ define([
         $opacity.on('change', updateBrushOpacity);
 
         APP.draw = true;
-        var toggleDrawMode = function () {
+        $brush.click(function () {
+            if (APP.draw) { return; }
             canvas.deactivateAll().renderAll();
-            APP.draw = !APP.draw;
+            APP.draw = true;
             canvas.isDrawingMode = APP.draw;
-            $toggle.text(APP.draw ? Messages.canvas_disable : Messages.canvas_enable);
-            if (APP.draw) { $deleteButton.hide(); }
-            else { $deleteButton.show(); }
-        };
-        $toggle.click(toggleDrawMode);
+            $type.find('button').removeClass('btn-primary');
+            $brush.addClass('btn-primary');
+            $deleteButton.prop('disabled', 'disabled');
+        });
+        $move.click(function () {
+            if (!APP.draw) { return; }
+            canvas.deactivateAll().renderAll();
+            APP.draw = false;
+            canvas.isDrawingMode = APP.draw;
+            $type.find('button').removeClass('btn-primary');
+            $move.addClass('btn-primary');
+            $deleteButton.prop('disabled', '');
+        });
 
         var deleteSelection = function () {
+            if (APP.draw) { return; }
             if (canvas.getActiveObject()) {
                 canvas.getActiveObject().remove();
             }
@@ -137,7 +149,7 @@ define([
                 canvas.discardActiveGroup();
             }
             canvas.renderAll();
-            framework.localChange();
+            APP.onLocal();
         };
         $deleteButton.click(deleteSelection);
         $(window).on('keyup', function (e) {
@@ -163,9 +175,6 @@ define([
             c = Colors.rgb2hex(c);
             brush.color = c;
             canvas.freeDrawingBrush.color = Colors.hex2rgba(brush.color, brush.opacity);
-            APP.$color.css({
-                'color': c,
-            });
             createCursor();
         };
 
@@ -211,6 +220,7 @@ define([
             if (first || Sortify(palette) !== Sortify(newPalette)) {
                 palette = newPalette;
                 $colors.html('<div class="hidden">&nbsp;</div>');
+                $colors.css('width', (palette.length * 20)+'px');
                 palette.forEach(addColorToPalette);
                 first = false;
             }
@@ -220,36 +230,7 @@ define([
             var metadata = JSON.parse(JSON.stringify(metadataMgr.getMetadata()));
             metadata.palette = newPalette;
             metadataMgr.updateMetadata(metadata);
-            framework.localChange();
-        };
-
-        var makeColorButton = function ($container) {
-            var $testColor = $('<input>', { type: 'color', value: '!' });
-
-            // if colors aren't supported, bail out
-            if ($testColor.attr('type') !== 'color' ||
-                $testColor.val() === '!') {
-                console.log("Colors aren't supported. Aborting");
-                return;
-            }
-
-            var $color = APP.$color = framework._.sfCommon.createButton(null, true, {
-                icon: 'fa-square',
-                title: Messages.canvas_chooseColor,
-                name: 'color',
-                id: 'cp-app-whiteboard-color-picker'
-            });
-            $color.on('click', function () {
-                pickColor($color.css('background-color'), function (color) {
-                    setColor(color);
-                });
-            });
-
-            setColor('#000');
-
-            $container.append($color);
-
-            return $color;
+            APP.onLocal();
         };
 
         updateLocalPalette(palette);
@@ -263,7 +244,6 @@ define([
 
         return {
             palette: palette,
-            makeColorButton: makeColorButton,
             updateLocalPalette: updateLocalPalette,
         };
     };
@@ -284,6 +264,34 @@ define([
         });
         var $canvas = $('canvas');
         var $canvasContainer = $('canvas').parents('.cp-app-whiteboard-canvas-container');
+        var $container = $('#cp-app-whiteboard-container');
+
+        // Max for old macs: 2048×1464
+        // Max for IE: 8192x8192
+        var MAX = 8192;
+        var onResize = APP.onResize = function () {
+            var w = $container.width();
+            var h = $container.height();
+            canvas.forEachObject(function (obj) {
+                var c = obj.getCoords();
+                Object.keys(c).forEach(function (k) {
+                    if (c[k].x > w) { w = c[k].x + 1; }
+                    if (c[k].y > h) { h = c[k].y + 1; }
+                });
+            });
+            w = Math.min(w, MAX);
+            h = Math.min(h, MAX);
+            canvas.setWidth(w);
+            canvas.setHeight(h);
+            canvas.calcOffset();
+        };
+        $(window).on('resize', onResize);
+
+        var onLocal = APP.onLocal = function () {
+            framework.localChange();
+            APP.onResize();
+        };
+
         var $controls = $('#cp-app-whiteboard-controls');
         var metadataMgr = framework._.cpNfInner.metadataMgr;
 
@@ -302,15 +310,18 @@ define([
             $canvasContainer.find('canvas').css('border-color', bool? 'black': 'red');
         };
 
-        mkHelpMenu(framework);
+        var privateData = metadataMgr.getPrivateData();
+        if (!privateData.isEmbed) {
+            mkHelpMenu(framework);
+        }
 
-        var controls = mkControls(framework, canvas);
+        mkControls(framework, canvas);
 
         // ---------------------------------------------
         // Whiteboard custom buttons
         // ---------------------------------------------
 
-        var $rightside = framework._.toolbar.$rightside;
+        var $drawer = framework._.toolbar.$drawer;
 
         APP.FM = framework._.sfCommon.createFileManager({});
         APP.upload = function (title) {
@@ -322,6 +333,11 @@ define([
             });
         };
         var addImageToCanvas = function (img) {
+            // 1 MB maximum
+            if (img.src && img.src.length > 1 * 1024 * 1024) {
+                UI.warn(Messages.upload_tooLargeBrief);
+                return;
+            }
             var w = img.width;
             var h = img.height;
             if (w<h) {
@@ -333,13 +349,18 @@ define([
             }
             var cImg = new Fabric.Image(img, { left:0, top:0, angle:0, });
             APP.canvas.add(cImg);
-            framework.localChange();
+            onLocal();
         };
 
         // Embed image
         var onUpload = function (e) {
             var file = e.target.files[0];
             var reader = new FileReader();
+            // 1 MB maximum
+            if (file.size > 1 * 1024 * 1024) {
+                UI.warn(Messages.upload_tooLargeBrief);
+                return;
+            }
             reader.onload = function () {
                 var img = new Image();
                 img.onload = function () {
@@ -349,41 +370,20 @@ define([
             };
             reader.readAsDataURL(file);
         };
-        framework._.sfCommon.createButton('', true, {
-            title: Messages.canvas_imageEmbed,
-            icon: 'fa-file-image-o',
-            name: 'embedImage'
-        }).click(function () {
-            $('<input>', {type:'file'}).on('change', onUpload).click();
-        }).appendTo($rightside);
 
         if (framework._.sfCommon.isLoggedIn()) {
-            var fileDialogCfg = {
-                onSelect: function (data) {
-                    if (data.type === 'file') {
-                        var mt = '<media-tag src="' + data.src + '" data-crypto-key="cryptpad:' + data.key + '"></media-tag>';
-                        framework._.sfCommon.displayMediatagImage($(mt), function (err, $image) {
-                            Util.blobURLToImage($image.attr('src'), function (imgSrc) {
-                                var img = new Image();
-                                img.onload = function () { addImageToCanvas(img); };
-                                img.src = imgSrc;
-                            });
-                        });
-                        return;
-                    }
-                }
-            };
-            framework._.sfCommon.initFilePicker(fileDialogCfg);
-            framework._.sfCommon.createButton('mediatag', true).click(function () {
-                var pickerCfg = {
-                    types: ['file'],
-                    where: ['root'],
-                    filter: {
-                        fileType: ['image/']
-                    }
-                };
-                framework._.sfCommon.openFilePicker(pickerCfg);
-            }).appendTo($rightside);
+            framework.setMediaTagEmbedder(function ($mt) {
+                framework._.sfCommon.displayMediatagImage($mt, function (err, $image) {
+                    // Convert src from blob URL to base64 data URL
+                    Util.blobURLToImage($image.attr('src'), function (imgSrc) {
+                        var img = new Image();
+                        img.onload = function () { addImageToCanvas(img); };
+                        img.src = imgSrc;
+                    });
+                });
+            }, {
+                fileType: ['image/']
+            });
 
             // Export to drive as PNG
             framework._.sfCommon.createButton('savetodrive', true, {}).click(function () {
@@ -392,18 +392,26 @@ define([
                     if (name === null || !name.trim()) { return; }
                     APP.upload(name);
                 });
-            }).appendTo($rightside);
+            }).appendTo($drawer);
+        } else {
+            framework._.sfCommon.createButton('', true, {
+                title: Messages.canvas_imageEmbed,
+                text: Messages.toolbar_insert,
+                drawer: false,
+                icon: 'fa-picture-o',
+                name: 'mediatag'
+            }).click(function () {
+                $('<input>', {type:'file'}).on('change', onUpload).click();
+            }).appendTo(framework._.toolbar.$bottomL);
         }
 
         if (framework.isReadOnly()) {
             setEditable(false);
-        } else {
-            controls.makeColorButton($rightside);
         }
 
         $('#cp-app-whiteboard-clear').on('click', function () {
             canvas.clear();
-            framework.localChange();
+            onLocal();
         });
 
         // ---------------------------------------------
@@ -432,6 +440,7 @@ define([
             var content = newContent.content;
             canvas.loadFromJSON(content, waitFor(function () {
                 canvas.renderAll();
+                onResize();
             }));
         });
 
@@ -461,9 +470,10 @@ define([
             window.setTimeout(mkThumbnail, Thumb.UPDATE_FIRST);
         });
 
-        canvas.on('mouse:up', framework.localChange);
+        canvas.on('mouse:up', onLocal);
         framework.start();
     };
+
 
     var initialContent = function () {
         return [
@@ -471,8 +481,6 @@ define([
             h('div#cp-app-whiteboard-canvas-area',
                 h('div#cp-app-whiteboard-container',
                     h('canvas#cp-app-whiteboard-canvas', {
-                        width: 600,
-                        height: 600
                     })
                 )
             ),
@@ -482,42 +490,56 @@ define([
                 }
             }, [
                 h('button#cp-app-whiteboard-clear.btn.btn-danger', Messages.canvas_clear), ' ',
+                h('div.cp-whiteboard-type', [
+                    h('button.brush.fa.fa-paint-brush.btn-primary', {title: Messages.canvas_brush}),
+                    h('button.move.fa.fa-arrows', {title: Messages.canvas_select}),
+                ]),
+                h('button.fa.fa-trash#cp-app-whiteboard-delete', {
+                    disabled: 'disabled',
+                    title: Messages.canvas_delete
+                }),
+                /*
+                h('button#cp-app-whiteboard-toggledraw.btn.btn-secondary', Messages.canvas_disable),
                 h('button#cp-app-whiteboard-toggledraw.btn.btn-secondary', Messages.canvas_disable),
                 h('button#cp-app-whiteboard-delete.btn.btn-secondary', {
                     style: {
                         display: 'none',
                     }
-                }, Messages.canvas_delete),
-                h('div.cp-app-whiteboard-range-group', [
-                    h('label', {
-                        'for': 'cp-app-whiteboard-width'
-                    }, Messages.canvas_width),
-                    h('input#cp-app-whiteboard-width', {
-                        type: 'range',
-                        min: "1",
-                        max: "100"
-                    }),
-                    h('span#cp-app-whiteboard-width-val', '5px')
+                }, Messages.canvas_delete),*/
+                h('div.cp-whiteboard-brush', [
+                    h('div.cp-app-whiteboard-range-group', [
+                        h('label', {
+                            'for': 'cp-app-whiteboard-width'
+                        }, Messages.canvas_width),
+                        h('input#cp-app-whiteboard-width', {
+                            type: 'range',
+                            value: "20",
+                            min: "1",
+                            max: "100"
+                        }),
+                        h('span#cp-app-whiteboard-width-val', '5px')
+                    ]),
+                    h('div.cp-app-whiteboard-range-group', [
+                        h('label', {
+                            'for': 'cp-app-whiteboard-opacity',
+                        }, Messages.canvas_opacity),
+                        h('input#cp-app-whiteboard-opacity', {
+                            type: 'range',
+                            value: "1",
+                            min: "0.1",
+                            max: "1",
+                            step: "0.1"
+                        }),
+                        h('span#cp-app-whiteboard-opacity-val', '100%')
+                    ]),
                 ]),
-                h('div.cp-app-whiteboard-range-group', [
-                    h('label', {
-                        'for': 'cp-app-whiteboard-opacity',
-                    }, Messages.canvas_opacity),
-                    h('input#cp-app-whiteboard-opacity', {
-                        type: 'range',
-                        min: "0.1",
-                        max: "1",
-                        step: "0.1"
-                    }),
-                    h('span#cp-app-whiteboard-opacity-val', '100%')
-                ]),
-                h('span.cp-app-whiteboard-selected.cp-app-whiteboard-unselectable', [
+                h('div.cp-app-whiteboard-selected.cp-app-whiteboard-unselectable', [
                     h('img', {
                         title: Messages.canvas_currentBrush
                     })
-                ])
+                ]),
+                UI.setHTML(h('div#cp-app-whiteboard-colors'), '&nbsp;'),
             ]),
-            UI.setHTML(h('div#cp-app-whiteboard-colors'), '&nbsp;'),
             h('div#cp-app-whiteboard-cursors', {
                 style: {
                     display: 'none',

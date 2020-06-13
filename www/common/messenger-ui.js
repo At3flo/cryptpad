@@ -329,7 +329,7 @@ define([
 
             var priv = metadataMgr.getPrivateData();
 
-            var closeTips = h('span.fa.fa-window-close.cp-app-contacts-tips-close');
+            var closeTips = h('span.fa.fa-times.cp-app-contacts-tips-close');
             var tips;
             if (isApp && Util.find(priv.settings, ['general', 'hidetips', 'chat']) !== true) {
                 tips = h('div.cp-app-contacts-tips', [
@@ -831,7 +831,6 @@ define([
             var md = common.getMetadataMgr().getMetadata();
             var name = md.title || md.defaultTitle;
             $userlist.find(dataQuery(padChat)).find('.cp-app-contacts-name').text(name);
-            $userlist.find(dataQuery(padChat)).attr('title', name);
             $messages.find(dataQuery(padChat) + ' .cp-app-contacts-header .cp-app-contacts-name')
                 .text(name);
 
@@ -879,7 +878,7 @@ define([
                         h('i.fa.fa-bell'),
                         Messages.contacts_unmute || 'unmute'
                     ]);
-                    UIElements.displayAvatar(common, $(avatar), data.avatar, data.name);
+                    common.displayAvatar($(avatar), data.avatar, data.name);
                     $(button).click(function () {
                         unmuteUser(curve, button);
                         execCommand('UNMUTE_USER', curve, function (e, data) {

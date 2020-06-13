@@ -2,11 +2,12 @@ define([
     '/common/common-util.js',
     '/common/common-hash.js',
     '/common/common-realtime.js',
+    '/common/common-messaging.js',
     '/common/notify.js',
     '/common/outer/mailbox-handlers.js',
     '/bower_components/chainpad-netflux/chainpad-netflux.js',
     '/bower_components/chainpad-crypto/crypto.js',
-], function (Util, Hash, Realtime, Notify, Handlers, CpNetflux, Crypto) {
+], function (Util, Hash, Realtime, Messaging, Notify, Handlers, CpNetflux, Crypto) {
     var Mailbox = {};
 
     var TYPES = [
@@ -96,6 +97,12 @@ proxy.mailboxes = {
 
         var crypto = Crypto.Mailbox.createEncryptor(keys);
 
+        // Always send your data
+        if (typeof(msg) === "object" && !msg.user) {
+            var myData = Messaging.createData(ctx.store.proxy, false);
+            msg.user = myData;
+        }
+
         var text = JSON.stringify({
             type: type,
             content: msg
@@ -127,13 +134,8 @@ proxy.mailboxes = {
         // If the hash in in our history, get the index from the history:
         // - if the index is 0, we can change our lastKnownHash
         // - otherwise, just push to view
-        var idx;
-        if (box.history.some(function (el, i) {
-            if (hash === el) {
-                idx = i;
-                return true;
-            }
-        })) {
+        var idx = box.history.indexOf(hash);
+        if (idx !== -1) {
             if (idx === 0) {
                 m.lastKnownHash = hash;
                 box.history.shift();
@@ -146,15 +148,25 @@ proxy.mailboxes = {
         // Check the "viewed" array to see if we're able to bump lastKnownhash more
         var sliceIdx;
         var lastKnownHash;
+        var toForget = [];
         box.history.some(function (hash, i) {
+            // naming here is confusing... isViewed implies it's a boolean
+            // when in fact it's an index
             var isViewed = m.viewed.indexOf(hash);
-            if (isViewed !== -1) {
-                sliceIdx = i + 1;
-                m.viewed.splice(isViewed, 1);
-                lastKnownHash = hash;
-                return false;
-            }
-            return true;
+
+            // iterate over your history until you hit an element you haven't viewed
+            if (isViewed === -1) { return true; }
+            // update the index that you'll use to slice off viewed parts of history
+            sliceIdx = i + 1;
+            // keep track of which hashes you should remove from your 'viewed' array
+            toForget.push(hash);
+            // prevent fetching dismissed messages on (re)connect
+            lastKnownHash = hash;
+        });
+
+        // remove all elements in 'toForget' from the 'viewed' array in one step
+        m.viewed = m.viewed.filter(function (hash) {
+            return toForget.indexOf(hash) === -1;
         });
 
         if (sliceIdx) {
@@ -187,6 +199,11 @@ proxy.mailboxes = {
             history: [], // All the hashes loaded from the server in corretc order
             content: {}, // Content of the messages that should be displayed
             sendMessage: function (msg) { // To send a message to our box
+                // Always send your data
+                if (typeof(msg) === "object" && !msg.user) {
+                    var myData = Messaging.createData(ctx.store.proxy, false);
+                    msg.user = myData;
+                }
                 try {
                     msg = JSON.stringify(msg);
                 } catch (e) {
@@ -419,6 +436,7 @@ proxy.mailboxes = {
         var mailbox = {};
         var store = cfg.store;
         var ctx = {
+            Store: cfg.Store,
             store: store,
             pinPads: cfg.pinPads,
             updateMetadata: cfg.updateMetadata,

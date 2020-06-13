@@ -11,6 +11,7 @@ define([
     '/common/sframe-common-codemirror.js',
     '/common/sframe-common-cursor.js',
     '/common/sframe-common-mailbox.js',
+    '/common/inner/common-mediatag.js',
     '/common/metadata-manager.js',
 
     '/customize/application_config.js',
@@ -35,6 +36,7 @@ define([
     CodeMirror,
     Cursor,
     Mailbox,
+    MT,
     MetadataMgr,
     AppConfig,
     CommonRealtime,
@@ -69,7 +71,7 @@ define([
     funcs.getAppConfig = function () { return AppConfig; };
 
     funcs.isLoggedIn = function () {
-        return ctx.metadataMgr.getPrivateData().accountName;
+        return ctx.metadataMgr.getPrivateData().loggedIn;
     };
 
     // MISC
@@ -83,12 +85,14 @@ define([
     };
 
     // UI
+    window.CryptPad_UI = UI;
+    window.CryptPad_UIElements = UIElements;
+    window.CryptPad_common = funcs;
     funcs.createUserAdminMenu = callWithCommon(UIElements.createUserAdminMenu);
-    funcs.initFilePicker = callWithCommon(UIElements.initFilePicker);
     funcs.openFilePicker = callWithCommon(UIElements.openFilePicker);
     funcs.openTemplatePicker = callWithCommon(UIElements.openTemplatePicker);
-    funcs.displayMediatagImage = callWithCommon(UIElements.displayMediatagImage);
-    funcs.displayAvatar = callWithCommon(UIElements.displayAvatar);
+    funcs.displayMediatagImage = callWithCommon(MT.displayMediatagImage);
+    funcs.displayAvatar = callWithCommon(MT.displayAvatar);
     funcs.createButton = callWithCommon(UIElements.createButton);
     funcs.createUsageBar = callWithCommon(UIElements.createUsageBar);
     funcs.updateTags = callWithCommon(UIElements.updateTags);
@@ -99,7 +103,9 @@ define([
     funcs.getBurnAfterReadingWarning = callWithCommon(UIElements.getBurnAfterReadingWarning);
     funcs.createNewPadModal = callWithCommon(UIElements.createNewPadModal);
     funcs.onServerError = callWithCommon(UIElements.onServerError);
-    funcs.importMediaTagMenu = callWithCommon(UIElements.importMediaTagMenu);
+    funcs.addMentions = callWithCommon(UIElements.addMentions);
+    funcs.importMediaTagMenu = callWithCommon(MT.importMediaTagMenu);
+    funcs.getMediaTagPreview = callWithCommon(MT.getMediaTagPreview);
 
     // Thumb
     funcs.displayThumbnail = callWithCommon(Thumb.displayThumbnail);
@@ -139,7 +145,13 @@ define([
         if (!$mt || !$mt.is('media-tag')) { return; }
         var chanStr = $mt.attr('src');
         var keyStr = $mt.attr('data-crypto-key');
-        var channel = chanStr.replace(/\/blob\/[0-9a-f]{2}\//i, '');
+        // Remove origin
+        var a = document.createElement('a');
+        a.href = chanStr;
+        var src = a.pathname;
+        // Get channel id
+        var channel = src.replace(/\/blob\/[0-9a-f]{2}\//i, '');
+        // Get key
         var key = keyStr.replace(/cryptpad:/i, '');
         var metadata = $mt[0]._mediaObject._blob.metadata;
         ctx.sframeChan.query('Q_IMPORT_MEDIATAG', {
@@ -190,6 +202,33 @@ define([
         };
     };
 
+    funcs.getAuthorId = function () {
+    };
+
+    var authorUid = function(existing) {
+        if (!Array.isArray(existing)) { existing = []; }
+        var n;
+        var i = 0;
+        while (!n || existing.indexOf(n) !== -1 && i++ < 1000) {
+            n = Math.floor(Math.random() * 1000000);
+        }
+        // If we can't find a valid number in 1000 iterations, use 0...
+        if (existing.indexOf(n) !== -1) { n = 0; }
+        return n;
+    };
+    funcs.getAuthorId = function(authors, curve) {
+        var existing = Object.keys(authors || {}).map(Number);
+        if (!funcs.isLoggedIn()) { return authorUid(existing); }
+
+        var uid;
+        existing.some(function(id) {
+            var author = authors[id] || {};
+            if (author.curvePublic !== curve) { return; }
+            uid = Number(id);
+            return true;
+        });
+        return uid || authorUid(existing);
+    };
 
     // Chat
     var padChatChannel;
@@ -209,6 +248,7 @@ define([
             setTimeout(saveChanges);
         }
         padChatChannel = channel;
+        console.error('Chat ID:', channel);
         ctx.sframeChan.query('Q_CHAT_OPENPADCHAT', channel, function (err, obj) {
             if (err || (obj && obj.error)) { console.error(err || (obj && obj.error)); }
         });
@@ -284,10 +324,9 @@ define([
         var priv = ctx.metadataMgr.getPrivateData();
         if (priv.isNewFile) {
             var c = (priv.settings.general && priv.settings.general.creation) || {};
-            var skip = !AppConfig.displayCreationScreen || (c.skip && !priv.forceCreationScreen);
             // If this is a new file but we have a hash in the URL and pad creation screen is
             // not displayed, then display an error...
-            if (priv.isDeleted && (!funcs.isLoggedIn() || skip)) {
+            if (priv.isDeleted && !funcs.isLoggedIn()) {
                 UI.errorLoadingScreen(Messages.inactiveError, false, function () {
                     UI.addLoadingScreen();
                     return void funcs.createPad({}, waitFor());
@@ -296,7 +335,7 @@ define([
             }
             // Otherwise, if we don't display the screen, it means it is not a deleted pad
             // so we can continue and start realtime...
-            if (!funcs.isLoggedIn() || skip) {
+            if (!funcs.isLoggedIn()) {
                 return void funcs.createPad(c, waitFor());
             }
             // If we display the pad creation screen, it will handle deleted pads directly
@@ -319,6 +358,26 @@ define([
             template: cfg.template,
             templateId: cfg.templateId
         }, cb);
+    };
+
+    funcs.isOwned = function (owners) {
+        var priv = ctx.metadataMgr.getPrivateData();
+        var edPublic = priv.edPublic;
+        var owned = false;
+        if (Array.isArray(owners) && owners.length) {
+            if (owners.indexOf(edPublic) !== -1) {
+                owned = true;
+            } else {
+                Object.keys(priv.teams || {}).some(function (id) {
+                    var team = priv.teams[id] || {};
+                    if (team.viewer) { return; }
+                    if (owners.indexOf(team.edPublic) === -1) { return; }
+                    owned = Number(id);
+                    return true;
+                });
+            }
+        }
+        return owned;
     };
 
     funcs.isPadStored = function (cb) {
@@ -603,6 +662,10 @@ define([
 
             UI.addTooltips();
 
+            ctx.sframeChan.on("EV_PAD_NODATA", function () {
+                UI.errorLoadingScreen(Messages.safeLinks_error);
+            });
+
             ctx.sframeChan.on("EV_PAD_PASSWORD", function (cfg) {
                 UIElements.displayPasswordPrompt(funcs, cfg);
             });
@@ -616,6 +679,7 @@ define([
             });
 
             ctx.sframeChan.on('EV_NEW_VERSION', function () {
+                // XXX lock the UI and do the same in non-framework apps
                 var $err = $('<div>').append(Messages.newVersionError);
                 $err.find('a').click(function () {
                     funcs.gotoURL();

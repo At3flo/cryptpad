@@ -5,13 +5,14 @@ define([
     '/common/common-hash.js',
     '/common/common-util.js',
     '/common/hyperscript.js',
+    '/common/inner/common-mediatag.js',
     '/common/media-tag.js',
     '/common/highlight/highlight.pack.js',
     '/customize/messages.js',
     '/bower_components/diff-dom/diffDOM.js',
     '/bower_components/tweetnacl/nacl-fast.min.js',
     'css!/common/highlight/styles/github.css'
-],function ($, ApiConfig, Marked, Hash, Util, h, MediaTag, Highlight, Messages) {
+],function ($, ApiConfig, Marked, Hash, Util, h, MT, MediaTag, Highlight, Messages) {
     var DiffMd = {};
 
     var DiffDOM = window.diffDOM;
@@ -22,8 +23,17 @@ define([
         init: function () {}
     };
 
-    require(['/code/mermaid.js', 'css!/code/mermaid.css'], function (_Mermaid) {
+    var mermaidThemeCSS = //".node rect { fill: #DDD; stroke: #AAA; } " +
+        "rect.task, rect.task0, rect.task2 { stroke-width: 1 !important; rx: 0 !important; } " +
+        "g.grid g.tick line { opacity: 0.25; }" +
+        "g.today line { stroke: red; stroke-width: 1; stroke-dasharray: 3; opacity: 0.5; }";
+
+    require(['mermaid', 'css!/code/mermaid-new.css'], function (_Mermaid) {
         Mermaid = _Mermaid;
+        Mermaid.initialize({
+            gantt: { axisFormat: '%m-%d', },
+            "themeCSS": mermaidThemeCSS,
+        });
     });
 
     var highlighter = function () {
@@ -55,7 +65,6 @@ define([
             var a = h('a.cp-md-toc-link', {
                 href: '#',
                 'data-href': obj.id,
-                title: obj.title
             });
             a.innerHTML = obj.title;
             content.push(h('p.cp-md-toc-'+level, ['• ',  a]));
@@ -85,7 +94,7 @@ define([
     var defaultCode = renderer.code;
     renderer.code = function (code, language) {
         if (language === 'mermaid' && code.match(/^(graph|pie|gantt|sequenceDiagram|classDiagram|gitGraph)/)) {
-            return '<pre class="mermaid">'+code+'</pre>';
+            return '<pre class="mermaid">'+Util.fixHTML(code)+'</pre>';
         } else {
             return defaultCode.apply(renderer, arguments);
         }
@@ -118,29 +127,30 @@ define([
     // Tasks list
     var checkedTaskItemPtn = /^\s*(<p>)?\[[xX]\](<\/p>)?\s*/;
     var uncheckedTaskItemPtn = /^\s*(<p>)?\[ ?\](<\/p>)?\s*/;
-    var bogusCheckPtn = /<input( checked=""){0,1} disabled="" type="checkbox">/;
+    var bogusCheckPtn = /<input checked="" disabled="" type="checkbox">/;
+    var bogusUncheckPtn = /<input disabled="" type="checkbox">/;
     renderer.listitem = function (text) {
         var isCheckedTaskItem = checkedTaskItemPtn.test(text);
         var isUncheckedTaskItem = uncheckedTaskItemPtn.test(text);
-        var hasBogusInput = bogusCheckPtn.test(text);
+        var hasBogusCheckedInput = bogusCheckPtn.test(text);
+        var hasBogusUncheckedInput = bogusUncheckPtn.test(text);
+        var isCheckbox = true;
         if (isCheckedTaskItem) {
             text = text.replace(checkedTaskItemPtn,
                 '<i class="fa fa-check-square" aria-hidden="true"></i>') + '\n';
-        }
-        if (isUncheckedTaskItem) {
+        } else if (isUncheckedTaskItem) {
             text = text.replace(uncheckedTaskItemPtn,
                 '<i class="fa fa-square-o" aria-hidden="true"></i>') + '\n';
-        }
-        if (!isCheckedTaskItem && !isUncheckedTaskItem && hasBogusInput) {
-            if (/checked/.test(text)) {
-                text = text.replace(bogusCheckPtn,
+        } else if (hasBogusCheckedInput) {
+            text = text.replace(bogusCheckPtn,
                 '<i class="fa fa-check-square" aria-hidden="true"></i>') + '\n';
-            } else if (/disabled/.test(text)) {
-                text = text.replace(bogusCheckPtn,
+        } else if (hasBogusUncheckedInput) {
+            text = text.replace(bogusUncheckPtn,
                 '<i class="fa fa-square-o" aria-hidden="true"></i>') + '\n';
-            }
+        } else {
+            isCheckbox = false;
         }
-        var cls = (isCheckedTaskItem || isUncheckedTaskItem || hasBogusInput) ? ' class="todo-list-item"' : '';
+        var cls = (isCheckbox) ? ' class="todo-list-item"' : '';
         return '<li'+ cls + '>' + text + '</li>\n';
     };
     restrictedRenderer.listitem = function (text) {
@@ -287,6 +297,32 @@ define([
         return patch;
     };
 
+    var removeMermaidClickables = function ($el) {
+        // find all links in the tree and do the following for each one
+        $el.find('a').each(function (index, a) {
+            var parent = a.parentElement;
+            if (!parent) { return; }
+            // iterate over the links' children and transform them into preceding children
+            // to preserve their visible ordering
+            slice(a.children).forEach(function (child) {
+                parent.insertBefore(child, a);
+            });
+            // remove the link once it has been emptied
+            $(a).remove();
+        });
+        // finally, find all 'clickable' items and remove the class
+        $el.find('.clickable').removeClass('clickable');
+    };
+    var renderMermaid = function ($el) {
+        Mermaid.init(undefined, $el);
+        // clickable elements in mermaid don't work well with our sandboxing setup
+        // the function below strips clickable elements but still leaves behind some artifacts
+        // tippy tooltips might still be useful, so they're not removed. It would be
+        // preferable to just support links, but this covers up a rough edge in the meantime
+        removeMermaidClickables($el);
+    };
+
+
     DiffMd.apply = function (newHtml, $content, common) {
         var contextMenu = common.importMediaTagMenu();
         var id = $content.attr('id');
@@ -310,19 +346,34 @@ define([
         var mermaid_source = [];
         var mermaid_cache = {};
 
+        var canonicalizeMermaidSource = function (src) {
+            // ignore changes to empty lines, since that won't affect
+            // since it will have no effect on the rendered charts
+            return src.replace(/\n[ \t]*\n*[ \t]*\n/g, '\n');
+        };
+
         // iterate over the unrendered mermaid inputs, caching their source as you go
         $(newDomFixed).find('pre.mermaid').each(function (index, el) {
             if (el.childNodes.length === 1 && el.childNodes[0].nodeType === 3) {
-                var src = el.childNodes[0].wholeText;
+                var src = canonicalizeMermaidSource(el.childNodes[0].wholeText);
                 el.setAttribute('mermaid-source', src);
                 mermaid_source[index] = src;
             }
         });
 
+        // remember the previous scroll position
+        var $parent = $content.parent();
+        var scrollTop = $parent.scrollTop();
         // iterate over rendered mermaid charts
         $content.find('pre.mermaid:not([processed="true"])').each(function (index, el) {
             // retrieve the attached source code which it was drawn
             var src = el.getAttribute('mermaid-source');
+
+/*  The new source might have syntax errors that will prevent rendering.
+    It might be preferable to keep the existing state instead of removing it
+    if you don't have something better to display. Ideally we should display
+    the cause of the syntax error so that the user knows what to correct.  */
+            //if (!Mermaid.parse(src)) { } // TODO
 
             // check if that source exists in the set of charts which are about to be rendered
             if (mermaid_source.indexOf(src) === -1) {
@@ -339,29 +390,110 @@ define([
 
         var oldDom = domFromHTML($content[0].outerHTML);
 
+        var onPreview = function ($mt) {
+            return function () {
+                var isSvg = $mt.is('pre.mermaid');
+                var mts = [];
+                $content.find('media-tag, pre.mermaid').each(function (i, el) {
+                    if (el.nodeName.toLowerCase() === "pre") {
+                        var clone = el.cloneNode();
+                        return void mts.push({
+                            svg: clone,
+                            render: function () {
+                                var $el = $(clone);
+                                $el.text(clone.getAttribute('mermaid-source'));
+                                $el.attr('data-processed', '');
+                                renderMermaid($el);
+                            }
+                        });
+                    }
+                    var $el = $(el);
+                    mts.push({
+                        src: $el.attr('src'),
+                        key: $el.attr('data-crypto-key')
+                    });
+                });
+
+                // Find initial position
+                var idx = -1;
+                mts.some(function (obj, i) {
+                    if (isSvg && $mt.attr('mermaid-source') === $(obj.svg).attr('mermaid-source')) {
+                        idx = i;
+                        return true;
+                    }
+                    if (!isSvg && obj.src === $mt.attr('src')) {
+                        idx = i;
+                        return true;
+                    }
+                });
+                if (idx === -1) {
+                    if (isSvg) {
+                        var clone = $mt[0].cloneNode();
+                        mts.unshift({
+                            svg: clone,
+                            render: function () {
+                                var $el = $(clone);
+                                $el.text(clone.getAttribute('mermaid-source'));
+                                $el.attr('data-processed', '');
+                                renderMermaid($el);
+                            }
+                        });
+                    } else {
+                        mts.unshift({
+                            src: $mt.attr('src'),
+                            key: $mt.attr('data-crypto-key')
+                        });
+                    }
+                    idx = 0;
+                }
+
+                setTimeout(function () {
+                    common.getMediaTagPreview(mts, idx);
+                });
+            };
+        };
+
         var patch = makeDiff(oldDom, Dom, id);
         if (typeof(patch) === 'string') {
             throw new Error(patch);
         } else {
             DD.apply($content[0], patch);
-            var $mts = $content.find('media-tag:not(:has(*))');
+            var $mts = $content.find('media-tag');
             $mts.each(function (i, el) {
-                $(el).contextmenu(function (e) {
+                var $mt = $(el).contextmenu(function (e) {
                     e.preventDefault();
                     $(contextMenu.menu).data('mediatag', $(el));
+                    $(contextMenu.menu).find('li').show();
                     contextMenu.show(e);
                 });
+                if ($mt.children().length) {
+                    $mt.off('click dblclick preview');
+                    $mt.on('preview', onPreview($mt));
+                    if ($mt.find('img').length) {
+                        $mt.on('click dblclick', function () {
+                            $mt.trigger('preview');
+                        });
+                    }
+                    return;
+                }
                 MediaTag(el);
                 var observer = new MutationObserver(function(mutations) {
                     mutations.forEach(function(mutation) {
                         if (mutation.type === 'childList') {
-                            var list_values = [].slice.call(mutation.target.children)
+                            var list_values = slice(mutation.target.children)
                                                 .map(function (el) { return el.outerHTML; })
                                                 .join('');
                             mediaMap[mutation.target.getAttribute('src')] = list_values;
                             observer.disconnect();
                         }
                     });
+                    $mt.off('click dblclick preview');
+                    $mt.on('preview', onPreview($mt));
+                    if ($mt.find('img').length) {
+                        $mt.on('click dblclick', function () {
+                            $mt.trigger('preview');
+                        });
+                    }
                 });
                 observer.observe(el, {
                     attributes: false,
@@ -381,6 +513,19 @@ define([
 
             // loop over mermaid elements in the rendered content
             $content.find('pre.mermaid').each(function (index, el) {
+                var $el = $(el);
+                $el.off('contextmenu').on('contextmenu', function (e) {
+                    e.preventDefault();
+                    $(contextMenu.menu).data('mediatag', $el);
+                    $(contextMenu.menu).find('li:not(.cp-svg)').hide();
+                    contextMenu.show(e);
+                });
+                $el.off('dblclick click preview');
+                $el.on('preview', onPreview($el));
+                $el.on('dblclick click', function () {
+                    $el.trigger('preview');
+                });
+
                 // since you've simply drawn the content that was supplied via markdown
                 // you can assume that the index of your rendered charts matches that
                 // of those in the markdown source. 
@@ -389,7 +534,12 @@ define([
                 var cached = mermaid_cache[src];
 
                 // check if you had cached a pre-rendered instance of the supplied source
-                if (typeof(cached) !== 'object') { return; }
+                if (typeof(cached) !== 'object') {
+                    try {
+                        renderMermaid($el);
+                    } catch (e) { console.error(e); }
+                    return;
+                }
 
                 // if there's a cached rendering, empty out the contained source code
                 // which would otherwise be drawn again.
@@ -400,12 +550,9 @@ define([
                 // and set a flag indicating that this graph need not be reprocessed
                 el.setAttribute('data-processed', true);
             });
-
-            try {
-                // finally, draw any graphs which have changed and were thus not cached
-                Mermaid.init(undefined, $content.find('pre.mermaid:not([data-processed="true"])'));
-            } catch (e) { console.error(e); }
         }
+        // recover the previous scroll position to avoid jank
+        $parent.scrollTop(scrollTop);
     };
 
     return DiffMd;
