@@ -23,9 +23,10 @@ services:
 
     restart: always
     volumes:
-      - ./data/files:/cryptpad/datastore:rw
-      - ./data/customize:/cryptpad/customize:rw
-      - ./data/blob:/cryptpad/blob:rw
-      - ./data/block:/cryptpad/block:rw
-      - ./data/config:/cryptpad/cfg:rw
-      - ./data/data:/cryptpad/data:rw
+      - /var/storage/cryptpad/datastore:/cryptpad/datastore:rw
+      - /var/storage/cryptpad/customize:/cryptpad/customize:rw
+      - /var/storage/cryptpad/blob:/cryptpad/blob:rw
+      - /var/storage/cryptpad/block:/cryptpad/block:rw
+      - /var/storage/cryptpad/cfg:/cryptpad/cfg:rw
+      - /var/storage/cryptpad/data:/cryptpad/data:rw
+      - /var/storage/cryptpad/blobstage:/cryptpad/blobstage:rw
