@@ -26,7 +26,7 @@ RUN groupadd cryptpad -g 4001
 RUN useradd cryptpad -u 4001 -g 4001 -d /cryptpad
 
 # Copy cryptpad with installed modules
-COPY --from=build . /cryptpad
+COPY --from=build /cryptpad /cryptpad
 RUN chown -R cryptpad:cryptpad /cryptpad
 USER cryptpad
 
