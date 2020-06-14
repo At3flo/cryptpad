@@ -2,11 +2,11 @@
 FROM node:12-buster-slim AS build
 
 # Checking if npm config get prefix return /usr/local
-RUN echo $(npm config get prefix)
+RUN chown -R $(whoami) $(npm config get prefix)/lib/node_modules
 
 # Install requirements to clone repository and install deps
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -yq git
-RUN npm install -g bower
+RUN npm install -g --unsafe-perm bower
 
 # Create folder for cryptpad
 RUN mkdir /cryptpad
@@ -19,7 +19,6 @@ RUN sed -i "s/\/\/httpAddress: \x27::\x27/httpAddress: \x270.0.0.0\x27/" /cryptp
 
 # Install dependencies
 RUN npm install --production \
-    && npm install -g bower \
     && bower install --allow-root
 
 # Create actual cryptpad image
