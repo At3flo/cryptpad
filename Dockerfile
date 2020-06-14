@@ -2,7 +2,7 @@
 FROM node:12-buster-slim AS build
 
 # Checking if npm config get prefix return /usr/local
-RUN npm config get prefix
+RUN echo $(npm config get prefix)
 
 # Install requirements to clone repository and install deps
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -yq git
