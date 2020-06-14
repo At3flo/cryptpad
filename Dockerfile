@@ -1,45 +1,50 @@
-# We use multi stage builds
-FROM node:12-stretch-slim AS build
+# Multistage build to reduce image size and increase security
+FROM node:12-buster-slim AS build
 
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -yq git jq python curl
+# Install requirements to clone repository and install deps
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -yq git
 RUN npm install -g bower
 
-# install tini in this stage to avoid the need of jq and python
-# in the final image
-ADD docker-install-tini.sh /usr/local/bin/docker-install-tini.sh
-RUN /usr/local/bin/docker-install-tini.sh
-
-COPY . /cryptpad
+# Create folder for cryptpad
+RUN mkdir /cryptpad
 WORKDIR /cryptpad
 
+# Get cryptpad from repository submodule
+COPY . /cryptpad
+
+RUN sed -i "s/\/\/httpAddress: \x27::\x27/httpAddress: \x270.0.0.0\x27/" /cryptpad/config/config.example.js
+
+# Install dependencies
 RUN npm install --production \
     && npm install -g bower \
     && bower install --allow-root
 
-FROM node:12-stretch-slim
+# Create actual cryptpad image
+FROM node:12-buster-slim
 
-# You want USE_SSL=true if not putting cryptpad behind a proxy
-ENV USE_SSL=false
-ENV STORAGE="'./storage/file'"
-ENV LOG_TO_STDOUT=true
+# Create user and group for cryptpad so it does not run as root
+RUN groupadd cryptpad -g 4001
+RUN useradd cryptpad -u 4001 -g 4001 -d /cryptpad
 
-# Persistent storage needs
-VOLUME /cryptpad/cfg
-VOLUME /cryptpad/datastore
-VOLUME /cryptpad/customize
-VOLUME /cryptpad/blobstage
-VOLUME /cryptpad/block
-VOLUME /cryptpad/blob
-VOLUME /cryptpad/data
+# Copy cryptpad with installed modules
+COPY --from=build --chown=cryptpad . /cryptpad
+USER cryptpad
 
-# Copy cryptpad and tini from the build container
-COPY --from=build /sbin/tini /sbin/tini
-COPY --from=build /cryptpad /cryptpad
-
+# Set workdir to cryptpad
 WORKDIR /cryptpad
 
-# Unsafe / Safe ports
+# Create directories
+RUN mkdir blob block customize data datastore
+
+# Volumes for data persistence
+VOLUME /cryptpad/blob
+VOLUME /cryptpad/block
+VOLUME /cryptpad/customize
+VOLUME /cryptpad/data
+VOLUME /cryptpad/datastore
+
+# Ports
 EXPOSE 3000 3001
 
 # Run cryptpad on startup
-CMD ["/sbin/tini", "--", "/cryptpad/container-start.sh"]
+CMD ["server.js"]
