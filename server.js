@@ -50,7 +50,7 @@ if (process.env.PACKAGE) {
     // fall back to listening on a local address
     // if httpAddress is not a string
     if (typeof(config.httpAddress) !== 'string') {
-        config.httpAddress = '127.0.0.1';
+        config.httpAddress = 'localhost';
     }
 
     // listen on port 3000 if a valid port number was not provided
