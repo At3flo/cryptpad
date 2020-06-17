@@ -41,6 +41,7 @@ VOLUME /cryptpad/block
 VOLUME /cryptpad/customize
 VOLUME /cryptpad/data
 VOLUME /cryptpad/datastore
+VOLUME /cryptpad/config
 
 # Ports
 EXPOSE 3000 3001
