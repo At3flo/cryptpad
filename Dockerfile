@@ -43,7 +43,7 @@ VOLUME /cryptpad/data
 VOLUME /cryptpad/datastore
 
 # Ports
-EXPOSE 80 81
+EXPOSE 3000 3001
 
 # Run cryptpad on startup
 CMD ["server.js"]
