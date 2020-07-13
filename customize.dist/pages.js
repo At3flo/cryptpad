@@ -110,7 +110,7 @@ define([
         if (username === null) {
             rightLinks = [
                 h('a.nav-item.nav-link.cp-login-btn', { href: '/login/'}, Msg.login_login),
-                h('a.nav-item.nav-link.cp-register-btn', { href: '/register/'}, Msg.login_register)
+                // h('a.nav-item.nav-link.cp-register-btn', { href: '/register/'}, Msg.login_register)
             ];
         } else {
             rightLinks = h('a.nav-item.nav-link.cp-user-btn', { href: '/drive/' }, [
@@ -140,12 +140,13 @@ define([
             h('a.navbar-brand', { href: '/index.html'}),
             button,
             h('div.collapse.navbar-collapse.justify-content-end#menuCollapse', [
-                h('a.nav-item.nav-link', { href: 'https://blog.cryptpad.fr/'}, Msg.blog),
-                h('a.nav-item.nav-link', { href: '/features.html'}, Msg.pricing),
-                h('a.nav-item.nav-link', { href: '/privacy.html'}, Msg.privacy),
+                // h('a.nav-item.nav-link', { href: 'https://blog.cryptpad.fr/'}, Msg.blog),
+                // h('a.nav-item.nav-link', { href: '/features.html'}, Msg.pricing),
+                // h('a.nav-item.nav-link', { href: '/privacy.html'}, Msg.privacy),
             ].concat(rightLinks))
         );
     };
 
     return Pages;
 });
+

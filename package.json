@@ -28,6 +28,7 @@
     "ws": "^3.3.1"
   },
   "devDependencies": {
+    "bower": "^1.8.8",
     "jshint": "^2.10.2",
     "less": "3.7.1",
     "lesshint": "^4.5.0",
@@ -45,6 +46,7 @@
     "test": "node scripts/TestSelenium.js",
     "test-rpc": "cd scripts/tests && node test-rpc",
     "template": "cd customize.dist/src && for page in ../index.html ../privacy.html ../terms.html ../about.html ../contact.html ../what-is-cryptpad.html ../features.html ../../www/login/index.html ../../www/register/index.html ../../www/user/index.html;do echo $page; cp template.html $page; done;",
-    "evict-inactive": "node scripts/evict-inactive.js"
+    "evict-inactive": "node scripts/evict-inactive.js",
+    "postinstall": "./node_modules/bower/bin/bower install"
   }
 }
