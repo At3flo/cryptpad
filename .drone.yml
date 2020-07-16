@@ -22,7 +22,7 @@ steps:
     PASSWORD:
       from_secret: docker-hub-pw
   commands:
-    - docker login -u ${USERNAME} -p ${PASSWORD}
+    - docker login -u $USERNAME -p $PASSWORD
     - docker push gcrkrause/cryptpad:latest
     - docker push gcrkrause/cryptpad:$(git submodule status | awk -F"[()]" '{print $2}')
     - docker image prune -a -f
