@@ -1,0 +1,14 @@
+---
+kind: pipeline
+type: exec
+name: build
+
+steps:
+- name: pull
+  commands:
+    - git submodule init
+    - git submodule update
+    - cd cryptpad
+    - git checkout $(git ls-remote -q --tags --refs --sort="committerdate" | tail -n1 | cut -d "/" -f3-)
+    - cd ..
+    - docker build -t gcrkrause/cryptpad . --no-cache
