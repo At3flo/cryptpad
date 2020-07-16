@@ -14,7 +14,7 @@ steps:
 - name: build
   commands:
     - docker build -t gcrkrause/cryptpad:$(git submodule status | awk -F"[()]" '{print $2}') . --no-cache
-    - docker tag gcrkrause/cryptpad gcrkrause/cryptpad:latest
+    - docker tag gcrkrause/cryptpad:$(git submodule status | awk -F"[()]" '{print $2}') gcrkrause/cryptpad:latest
 - name: push
   environment:
     USERNAME:
