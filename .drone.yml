@@ -11,4 +11,6 @@ steps:
     - cd cryptpad
     - git checkout $(git ls-remote -q --tags --refs --sort="committerdate" | tail -n1 | cut -d "/" -f3-)
     - cd ..
-    - docker build -t gcrkrause/cryptpad . --no-cache
+- name: build
+  commands:
+    - docker build -t gcrkrause/cryptpad:$(git submodule status | awk -F"[()]" '{print $2}') . --no-cache
