@@ -3,6 +3,10 @@ kind: pipeline
 type: exec
 name: build
 
+platform:
+  os: linux
+  arch: arm64
+
 steps:
 - name: pull
   commands:
