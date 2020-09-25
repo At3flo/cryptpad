@@ -1,0 +1,32 @@
+---
+kind: pipeline
+type: exec
+name: build
+
+platform:
+  os: linux
+  arch: arm64
+
+steps:
+- name: pull
+  commands:
+    - git submodule init
+    - git submodule update
+    - cd cryptpad
+    - git checkout $(git ls-remote -q --tags --refs --sort="committerdate" | tail -n1 | cut -d "/" -f3-)
+    - cd ..
+- name: build
+  commands:
+    - docker build -t gcrkrause/cryptpad:$(git submodule status | awk -F"[()]" '{print $2}') . --no-cache
+    - docker tag gcrkrause/cryptpad:$(git submodule status | awk -F"[()]" '{print $2}') gcrkrause/cryptpad:latest
+- name: push
+  environment:
+    USERNAME:
+      from_secret: docker-hub-user
+    PASSWORD:
+      from_secret: docker-hub-pw
+  commands:
+    - docker login -u $USERNAME -p $PASSWORD
+    - docker push gcrkrause/cryptpad:latest
+    - docker push gcrkrause/cryptpad:$(git submodule status | awk -F"[()]" '{print $2}')
+    - docker image prune -a -f
