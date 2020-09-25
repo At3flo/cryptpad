@@ -1,13 +1,16 @@
 @import (reference) "./colortheme-all.less";
 @import (reference) "./variables.less";
 @import (reference) "./avatar.less";
-@import (reference) "./buttons.less";
 @import (reference) "./tools.less";
 
 .comments_main() {
     @data-color: #888;
     overflow-y: auto;
     color: @cryptpad_text_col;
+
+    &:empty {
+        display: none !important;
+    }
 
     &.cp-comments-readonly {
         .cp-comment-actions {
@@ -21,8 +24,6 @@
         }
 
     }
-
-    .buttons_main();
 
     .cp-comment-reply {
         margin-left: 30px;
@@ -62,10 +63,6 @@
         button:not(:last-child) {
             margin-right: 5px;
         }
-    }
-
-    #cp-comments-label {
-        display: none;
     }
 
     .cp-comment-container {

@@ -15,6 +15,14 @@ require(['/api/config'], function(ApiConfig) {
         }
         return resource;
     };
+
+    window.MathJax = {
+        "HTML-CSS": {
+        },
+        TeX: {
+        }
+    };
+
     require(['/bower_components/ckeditor/ckeditor.js']);
 });
 define([
@@ -34,6 +42,7 @@ define([
     '/common/common-hash.js',
     '/common/common-util.js',
     '/common/common-interface.js',
+    '/common/common-ui-elements.js',
     '/common/hyperscript.js',
     '/bower_components/chainpad/chainpad.dist.js',
     '/customize/application_config.js',
@@ -61,6 +70,7 @@ define([
     Hash,
     Util,
     UI,
+    UIElements,
     h,
     ChainPad,
     AppConfig,
@@ -416,6 +426,41 @@ define([
         });
     };
 
+    var addTOCHideBtn = function(framework, $toc) {
+        // Expand / collapse the toolbar
+        var onClick = function(visible) {
+            framework._.sfCommon.setAttribute(['pad', 'showTOC'], visible);
+        };
+        framework._.sfCommon.getAttribute(['pad', 'showTOC'], function(err, data) {
+            var state = false;
+            if (($(window).height() >= 800 || $(window).width() >= 800) &&
+                (typeof(data) === "undefined" || data)) {
+                state = true;
+                $toc.show();
+            } else {
+                $toc.hide();
+            }
+            var $tocButton = framework._.sfCommon.createButton('', true, {
+                drawer: false,
+                text: Messages.pad_tocHide,
+                name: 'pad_toc',
+                icon: 'fa-list-ul',
+            }, function () {
+                $tocButton.removeClass('cp-toolbar-button-active');
+                $toc.toggle();
+                state = $toc.is(':visible');
+                if (state) {
+                    $tocButton.addClass('cp-toolbar-button-active');
+                }
+                onClick(state);
+            });
+            framework._.toolbar.$bottomL.append($tocButton);
+            if (state) {
+                $tocButton.addClass('cp-toolbar-button-active');
+            }
+        });
+    };
+
     var displayMediaTags = function(framework, dom, mediaTagMap) {
         setTimeout(function() { // Just in case
             var tags = dom.querySelectorAll('media-tag:empty');
@@ -456,6 +501,15 @@ define([
         });
     };
 
+    var mkPrintButton = function (framework, editor) {
+        var $printButton = framework._.sfCommon.createButton('print', true);
+        $printButton.click(function () {
+            editor.execCommand('print');
+            framework.feedback('PRINT_PAD');
+        });
+        framework._.toolbar.$drawer.append($printButton);
+    };
+
     var andThen2 = function(editor, Ckeditor, framework) {
         var mediaTagMap = {};
         var $contentContainer = $('#cke_1_contents');
@@ -479,6 +533,8 @@ define([
         $iframe.find('head').append('<link href="' + customCss + '" type="text/css" rel="stylesheet" _fcktemp="true"/>');
 
         framework._.sfCommon.addShortcuts(ifrWindow);
+
+        mkPrintButton(framework, editor, Ckeditor);
 
         var documentBody = ifrWindow.document.body;
         var inner = window.inner = documentBody;
@@ -517,6 +573,9 @@ define([
             $contentContainer: $contentContainer,
             $container: $('#cp-app-pad-comments')
         });
+
+        var $toc = $('#cp-app-pad-toc');
+        addTOCHideBtn(framework, $toc);
 
         // My cursor
         var cursor = module.cursor = Cursor(inner);
@@ -588,6 +647,34 @@ define([
             }, 500); // 500ms to make sure it is sent after chainpad sync
         };
 
+        var updateTOC = Util.throttle(function () {
+            var toc = [];
+            $inner.find('h1, h2, h3').each(function (i, el) {
+                toc.push({
+                    level: Number(el.tagName.slice(1)),
+                    el: el,
+                    title: Util.stripTags($(el).text())
+                });
+            });
+            var content = [h('h2', Messages.markdown_toc)];
+            toc.forEach(function (obj) {
+                // Only include level 2 headings
+                var level = obj.level;
+                var a = h('a.cp-pad-toc-link', {
+                    href: '#',
+                });
+                $(a).click(function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!obj.el || UIElements.isVisible(obj.el, $inner)) { return; }
+                    obj.el.scrollIntoView();
+                });
+                a.innerHTML = obj.title;
+                content.push(h('p.cp-pad-toc-'+level, a));
+            });
+            $toc.html('').append(content);
+        }, 400);
+
         // apply patches, and try not to lose the cursor in the process!
         framework.onContentUpdate(function(hjson) {
             if (!Array.isArray(hjson)) { throw new Error(Messages.typeError); }
@@ -647,6 +734,8 @@ define([
             }
 
             comments.onContentUpdate();
+
+            updateTOC();
         });
 
         framework.setTextContentGetter(function() {
@@ -706,6 +795,7 @@ define([
 
             var fmConfig = {
                 ckeditor: editor,
+                dropArea: $inner,
                 body: $('body'),
                 onUploaded: function(ev, data) {
                     var parsed = Hash.parsePadUrl(data.url);
@@ -724,7 +814,24 @@ define([
                     editor.widgets.initOn(element, 'mediatag');
                 }
             };
-            window.APP.FM = framework._.sfCommon.createFileManager(fmConfig);
+            var FM = window.APP.FM = framework._.sfCommon.createFileManager(fmConfig);
+
+            editor.on('paste', function (ev) {
+                try {
+                    var files = ev.data.dataTransfer._.files;
+                    files.forEach(function (f) {
+                        FM.handleFile(f);
+                    });
+                    // If the paste data contains files, don't use the ckeditor default handlers
+                    // ==> they would try to include either a remote image URL or a base64 image
+                    if (files.length) {
+                        ev.cancel();
+                        ev.preventDefault();
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            });
 
             framework._.sfCommon.getAttribute(['pad', 'spellcheck'], function(err, data) {
                 if (framework.isReadOnly()) { return; }
@@ -840,8 +947,12 @@ define([
             framework.localChange();
             updateCursor();
             editor.fire('cp-wc'); // Update word count
+            updateTOC();
         });
-        editor.on('change', framework.localChange);
+        editor.on('change', function () {
+            framework.localChange();
+            updateTOC();
+        });
 
         var wordCount = h('span.cp-app-pad-wordCount');
         $('.cke_toolbox_main').append(wordCount);
@@ -961,6 +1072,37 @@ define([
                 Ckeditor.plugins.addExternal('blockbase64', '/pad/', 'disable-base64.js');
                 Ckeditor.plugins.addExternal('comments', '/pad/', 'comment.js');
                 Ckeditor.plugins.addExternal('wordcount', '/pad/wordcount/', 'plugin.js');
+
+/*  CKEditor4 is, by default, incompatible with strong CSP settings due to the
+    way it loads a variety of resources and event handlers by injecting HTML
+    via the innerHTML API.
+
+    In most cases those handlers just call a function with an id, so there's no
+    strong case for why it should be done this way except that lots of code depends
+    on this behaviour. These handlers all stop working when we enable our default CSP,
+    but fortunately the code is simple enough that we can use regex to grab the id
+    from the inline code and call the relevant function directly, preserving the
+    intended behaviour while preventing malicious code injection.
+
+    Unfortunately, as long as the original code is still present the console
+    fills up with CSP warnings saying that inline scripts were blocked.
+    The code below overrides CKEditor's default `setHtml` method to include
+    a string.replace call which will rewrite various inline event handlers from
+    onevent to oonevent.. rendering them invalid as scripts and preventing
+    some needless noise from showing up in the console.
+
+    YAY!
+*/
+                Ckeditor.dom.element.prototype.setHtml = function(a){
+                    if (/callFunction/.test(a)) {
+                        a = a.replace(/on(mousedown|blur|keydown|focus|click|dragstart)/g, function (value) {
+                            return 'o' + value;
+                        });
+                    }
+                    this.$.innerHTML = a;
+                    return a;
+                };
+
                 module.ckeditor = editor = Ckeditor.replace('editor1', {
                     customConfig: '/customize/ckeditor-config.js',
                 });
@@ -1009,10 +1151,14 @@ define([
                 var $ckeToolbar = $('#cke_1_top').find('.cke_toolbox_main');
                 $mainContainer.prepend($ckeToolbar.addClass('cke_reset_all'));
                 $contentContainer.append(h('div#cp-app-pad-comments'));
+                $contentContainer.prepend(h('div#cp-app-pad-toc'));
                 $ckeToolbar.find('.cke_button__image_icon').parent().hide();
             }).nThen(waitFor());
 
+        }).nThen(function(waitFor) {
+            require(['/pad/csp.js'], waitFor());
         }).nThen(function( /*waitFor*/ ) {
+
             function launchAnchorTest(test) {
                 // -------- anchor test: make sure the exported anchor contains <a name="...">  -------
                 console.log('---- anchor test: make sure the exported anchor contains <a name="...">  -----.');

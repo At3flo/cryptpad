@@ -478,6 +478,7 @@ define([
                 store: store,
             };
             var myData = Messaging.createData(userObject);
+            if (!myData.curvePublic) { return void done(); }
 
             Mailbox.sendTo(ctx, 'SAFE_LINKS_DEFAULT', {
                 user: myData,
@@ -499,7 +500,7 @@ define([
             }, 500);
             progress(0, 0);*/
         }).nThen(function () {
-            Realtime.whenRealtimeSyncs(store.realtime, Util.bake(cb));
+            Realtime.whenRealtimeSyncs(store.realtime, Util.mkAsync(Util.bake(cb)));
         });
     };
 });

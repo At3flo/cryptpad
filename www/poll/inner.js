@@ -2,6 +2,7 @@ define([
     'jquery',
     '/common/toolbar.js',
     '/common/common-util.js',
+    '/common/common-hash.js',
     '/bower_components/nthen/index.js',
     '/common/sframe-common.js',
     '/common/common-realtime.js',
@@ -32,6 +33,7 @@ define([
     $,
     Toolbar,
     Util,
+    Hash,
     nThen,
     SFCommon,
     CommonRealtime,
@@ -940,6 +942,25 @@ define([
         $('.CodeMirror').parent().prepend(markdownTb.toolbar);
         APP.toolbar.$bottomL.append(markdownTb.button);
 
+        // Add drop and paste handlers
+        var privateData = metadataMgr.getPrivateData();
+        var fmConfig = {
+            dropArea: $('.CodeMirror'),
+            body: $('body'),
+            onUploaded: function (ev, data) {
+                var parsed = Hash.parsePadUrl(data.url);
+                var secret = Hash.getSecrets('file', parsed.hash, data.password);
+                var fileHost = privateData.fileHost || privateData.origin;
+                var src = fileHost + Hash.getBlobPathFromHex(secret.channel);
+                var key = Hash.encodeBase64(secret.keys.cryptKey);
+                var mt = '<media-tag src="' + src + '" data-crypto-key="cryptpad:' + key + '"></media-tag>';
+                APP.editor.replaceSelection(mt);
+            }
+        };
+        common.createFileManager(fmConfig);
+
+        SframeCM.handleImagePaste(APP.editor);
+
         // Initialize author name for comments.
         // Disable name modification for logged in users
         var $cName = APP.$addComment.find('.cp-app-poll-comments-add-name')
@@ -1205,6 +1226,7 @@ define([
                 };
                 common.openFilePicker(pickerCfg, function (data) {
                     if (data.type === 'file' && APP.editor) {
+                        common.setPadAttribute('atime', +new Date(), null, data.href);
                         var mt = '<media-tag src="' + data.src + '" data-crypto-key="cryptpad:' + data.key + '"></media-tag>';
                         APP.editor.replaceSelection(mt);
                         return;

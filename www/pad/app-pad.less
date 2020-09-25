@@ -1,6 +1,6 @@
 @import (reference) "../../customize/src/less2/include/framework.less";
 @import (reference) "../../customize/src/less2/include/comments.less";
-@import (reference) "../../customize/src/less2/include/buttons.less";
+@import (reference) "../../customize/src/less2/include/tools.less";
 
 body.cp-app-pad {
     .framework_main(
@@ -24,6 +24,33 @@ body.cp-app-pad {
         overflow: hidden;
     }
 
+    #cp-app-pad-toc {
+        @toc-level-indent: 15px;
+
+        margin-top: 10px;
+        margin-left: 10px;
+        width: 200px;
+        color: @cryptpad_text_col;
+        h2 {
+            font-size: 1.5rem;
+        }
+        p {
+            margin-bottom: 5px;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            a {
+                color: @cryptpad_text_col;
+            }
+            &.cp-pad-toc-2 {
+                margin-left: @toc-level-indent;
+            }
+            &.cp-pad-toc-3 {
+                margin-left: @toc-level-indent * 2;
+            }
+        }
+    }
+
     .cke_toolbox_main {
         background-color: @colortheme_pad-toolbar-bg;
         .cke_toolbar {
@@ -36,6 +63,12 @@ body.cp-app-pad {
             height: 24px;
             align-items: center;
             padding: 4px;
+        }
+        .cke_button__print {
+            display: none !important;
+        }
+        .cke_button {
+            .tools_unselectable();
         }
     }
     .cke_wysiwyg_frame {
@@ -71,7 +104,6 @@ body.cp-app-pad {
             order: 1;
         }
         div.cp-comment-bubble {
-            .buttons_main();
             position: relative;
             order: 2;
             button {

@@ -10,7 +10,6 @@ define([
     '/common/common-interface.js',
     '/common/common-ui-elements.js',
     '/common/inner/common-mediatag.js',
-    '/common/modes.js',
     '/customize/messages.js',
     '/common/hyperscript.js',
     '/common/text-cursor.js',
@@ -48,7 +47,6 @@ define([
     UI,
     UIElements,
     MT,
-    Modes,
     Messages,
     h,
     TextCursor,
@@ -503,7 +501,7 @@ define([
         $container.find('.kanban-item').each(function (i, el) {
             var itemId = $(el).attr('data-eid');
             $('<button>', {
-                'class': 'kanban-edit-item btn btn-default fa fa-pencil',
+                'class': 'kanban-edit-item fa fa-pencil',
                 'alt': Messages.kanban_editCard,
             }).click(function (e) {
                 getItemEditModal(framework, kanban, itemId);
@@ -513,7 +511,7 @@ define([
         $container.find('.kanban-board').each(function (i, el) {
             var itemId = $(el).attr('data-id');
             $('<button>', {
-                'class': 'kanban-edit-item btn btn-default fa fa-pencil',
+                'class': 'kanban-edit-item fa fa-pencil',
                 'alt': Messages.kanban_editBoard,
             }).click(function (e) {
                 getBoardEditModal(framework, kanban, itemId);
@@ -610,6 +608,8 @@ define([
             framework._.sfCommon.openUnsafeURL(href);
         };
 
+        var md = framework._.cpNfInner.metadataMgr.getPrivateData();
+        var _tagsAnd = Util.find(md, ['settings', 'kanban', 'tagsAnd']);
 
         var kanban = new jKanban({
             element: '#cp-app-kanban-content',
@@ -617,6 +617,7 @@ define([
             widthBoard: '300px',
             buttonContent: '❌',
             readOnly: framework.isReadOnly(),
+            tagsAnd: _tagsAnd,
             refresh: function () {
                 onRedraw.fire();
             },
@@ -761,6 +762,9 @@ define([
                 var isTop = $el.attr('data-top');
                 var boardId = $el.closest('.kanban-board').attr("data-id");
                 var $item = $('<div>', {'class': 'kanban-item new-item'});
+                if (isTop) {
+                    $item.addClass('item-top');
+                }
                 var $input = getInput().val(name).appendTo($item);
                 kanban.addForm(boardId, $item[0], isTop);
                 $input.focus();
@@ -827,6 +831,17 @@ define([
             getTags: getExistingTags,
             cursors: remoteCursors,
             boards: boards
+        });
+
+        framework._.cpNfInner.metadataMgr.onChange(function () {
+            var md = framework._.cpNfInner.metadataMgr.getPrivateData();
+            var tagsAnd = Util.find(md, ['settings', 'kanban', 'tagsAnd']);
+            if (_tagsAnd === tagsAnd) { return; }
+
+            // If the rendering has changed, update the value and redraw
+            kanban.options.tagsAnd = tagsAnd;
+            _tagsAnd = tagsAnd;
+            kanban.setBoards(kanban.options.boards);
         });
 
         if (migrated) { framework.localChange(); }
@@ -913,7 +928,9 @@ define([
             var redrawList = function (allTags) {
                 if (!Array.isArray(allTags)) { return; }
                 $list.empty();
+                $list.removeClass('cp-empty');
                 if (!allTags.length) {
+                    $list.addClass('cp-empty');
                     $list.append(h('em', Messages.kanban_noTags));
                     return;
                 }
@@ -1057,6 +1074,7 @@ define([
                 } else if (!$el.length) {
                     $el = $container.find('[data-eid="'+id+'"]');
                 }
+                var isTop = $el && $el.hasClass('item-top');
                 if (!$el.length) { return; }
                 var $input = $el.find('input');
                 if (!$input.length) { return; }
@@ -1075,6 +1093,7 @@ define([
                     value: val,
                     start: start,
                     end: end,
+                    isTop: isTop,
                     oldValue: oldVal
                 };
             } catch (e) {
@@ -1090,8 +1109,10 @@ define([
                 // An item was being added: add a new item
                 if (id === "new" && !data.oldValue) {
                     var $newBoard = $('.kanban-board[data-id="'+data.newBoard+'"]');
-                    $newBoard.find('.kanban-title-button').click();
-                    var $newInput = $newBoard.find('.kanban-item:last-child input');
+                    var topSelector = ':not([data-top])';
+                    if (data.isTop) { topSelector = '[data-top]'; }
+                    $newBoard.find('.kanban-title-button' + topSelector).click();
+                    var $newInput = $newBoard.find('.kanban-item.new-item input');
                     $newInput.val(data.value);
                     $newInput[0].selectionStart = data.start;
                     $newInput[0].selectionEnd = data.end;

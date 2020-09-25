@@ -110,7 +110,8 @@ define([
                     }));
                 }).nThen(function (waitFor) {
                     var curve = $el.attr('data-curve');
-                    var friend = curve === user.curvePublic ? user : friends[curve];
+                    if (curve === user.curvePublic) { return; }
+                    var friend = friends[curve];
                     if (!friend) { return; }
                     common.mailbox.sendTo("RM_OWNER", {
                         channel: channel,
@@ -371,8 +372,7 @@ define([
         var parsed = Hash.parsePadUrl(data.href || data.roHref);
         var owned = Modal.isOwned(Env, data);
         var disabled = !owned || !parsed.hashData || parsed.hashData.type !== 'pad';
-        var allowDisabled = parsed.type === 'drive';
-        if (disabled || allowDisabled) { return void cb(); }
+        if (disabled) { return void cb(); }
 
         opts = opts || {};
 
@@ -805,7 +805,7 @@ define([
                         id: 'cp-app-prop-change-password',
                         style: 'flex: 1;'
                     });
-                    var passwordOk = h('button', Messages.properties_changePasswordButton);
+                    var passwordOk = h('button.btn', Messages.properties_changePasswordButton);
                     var changePass = h('span.cp-password-change-container', [
                         newPassword,
                         passwordOk
@@ -896,6 +896,28 @@ define([
                     });
                     $d.append(changePass);
                 }
+            }
+            if (owned) {
+                var deleteOwned = h('button.btn.btn-danger-alt', [h('i.cptools.cptools-destroy'), Messages.fc_delete_owned]);
+                var spinner = UI.makeSpinner();
+                UI.confirmButton(deleteOwned, {
+                    classes: 'btn-danger'
+                }, function () {
+                    spinner.spin();
+                    sframeChan.query('Q_DELETE_OWNED', {
+                        teamId: typeof(owned) !== "boolean" ? owned : undefined,
+                        channel: data.channel
+                    }, function (err, obj) {
+                        spinner.done();
+                        UI.findCancelButton().click();
+                        if (err || (obj && obj.error)) { UI.warn(Messages.error); }
+                    });
+                });
+                $d.append(h('br'));
+                $d.append(h('div', [
+                    deleteOwned,
+                    spinner.spinner
+                ]));
             }
             return $d;
         };
